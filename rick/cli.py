@@ -135,8 +135,28 @@ def main() -> None:
     logger.info(f"=== done in {elapsed}s ===")
 
     # ── Output finale ─────────────────────────────────────────────────────────
+    # Recuperiamo il piano e gli output per il debug visivo
+    intent = final_state.get("intent")
+    skills = final_state.get("skills_needed", [])
+    plan = final_state.get("plan", [])
+    verdict = final_state.get("audit_verdict")
+    
+    if intent:
+        print(f"\n[INTENTO] {intent}")
+    
+    if skills and skills != ["none"]:
+        print(f"📋 [PIANO] {', '.join(skills)}")
+        for step in plan:
+            print(f"  └─ Passo {step.get('step')}: {step.get('task')} ({step.get('skill')})")
+    
+    if verdict:
+        color = "✅" if verdict == "pass" else "❌"
+        print(f"{color} [AUDIT] {verdict.upper()}")
+
     response = final_state.get("final_response") or final_state.get("final_draft", "")
-    print("\n" + response + "\n")
+    print("\n" + "═"*40)
+    print(response)
+    print("═"*40 + "\n")
 
     # ── Sandbox ───────────────────────────────────────────────────────────────
     if args.sandbox:

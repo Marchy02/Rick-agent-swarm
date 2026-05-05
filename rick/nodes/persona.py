@@ -109,7 +109,7 @@ def persona_node(state: RickState) -> dict:
         prompt = "\n".join(prompt_parts)
 
     raw = llm_generate(
-        provider=cfg.PROVIDER_PERSONA,
+        provider="ollama",
         model=MODEL_PERSONA,
         prompt=prompt,
         system=system,

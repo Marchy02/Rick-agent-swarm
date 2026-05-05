@@ -11,15 +11,6 @@ from rick.config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT
 logger = logging.getLogger(__name__)
 
 
-import logging
-import time
-import httpx
-from rick.config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT
-from rick.llm.gemini import gemini_generate
-
-logger = logging.getLogger(__name__)
-
-
 def ollama_generate(
     model: str,
     prompt: str,
@@ -27,7 +18,19 @@ def ollama_generate(
     temperature: float = 0.7,
     keep_alive: str = "5m",
 ) -> str:
-    """Chiama POST /api/generate di Ollama in locale."""
+    """
+    Chiama POST /api/generate di Ollama e restituisce la risposta completa.
+
+    Args:
+        model:       nome modello Ollama (es. "qwen2.5:7b")
+        prompt:      testo utente
+        system:      system prompt (stringa, può essere vuoto)
+        temperature: temperatura generazione
+        keep_alive:  quanto tenere il modello in RAM ("0" = scarica subito)
+
+    Returns:
+        Testo generato, o stringa di errore in caso di failure.
+    """
     url = f"{OLLAMA_BASE_URL}/api/generate"
     payload: dict = {
         "model":      model,
@@ -62,6 +65,26 @@ def ollama_generate(
         return f"[ERROR:{type(e).__name__}] {e}"
 
 
+def call_llm(
+    prompt: str,
+    model: str = "qwen2.5:7b",
+    temperature: float = 0.7,
+    system: str = "",
+    timeout: int | None = None,
+    keep_alive: str = "5m",
+) -> str:
+    """
+    Interfaccia semplificata per chiamare Ollama.
+    Wrapper di ollama_generate con parametri opzionali più comodi.
+    """
+    return ollama_generate(
+        model=model,
+        prompt=prompt,
+        system=system,
+        temperature=temperature,
+        keep_alive=keep_alive,
+    )
+
 def llm_generate(
     provider: str,
     model: str,
@@ -71,20 +94,13 @@ def llm_generate(
     keep_alive: str = "5m",
 ) -> str:
     """
-    Router unificato per chiamare Ollama o Gemini in base al provider.
+    Funzione di compatibilità per i vecchi nodi (manager, persona, dispatcher).
+    Ignora il provider e usa sempre Ollama.
     """
-    if provider == "gemini":
-        return gemini_generate(
-            model=model,
-            prompt=prompt,
-            system=system,
-            temperature=temperature
-        )
-    else:
-        return ollama_generate(
-            model=model,
-            prompt=prompt,
-            system=system,
-            temperature=temperature,
-            keep_alive=keep_alive
-        )
+    return ollama_generate(
+        model=model,
+        prompt=prompt,
+        system=system,
+        temperature=temperature,
+        keep_alive=keep_alive
+    )

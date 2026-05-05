@@ -79,3 +79,6 @@ def build_graph():
     workflow.add_conditional_edges("auditor", after_audit)
     
     return workflow.compile()
+
+# Istanza globale del grafo per il CLI
+graph = build_graph()

@@ -13,7 +13,7 @@ def auditor_node(state: RickState) -> dict:
     Verifica draft di Rick e output di expert/executor.
     Se non c'è nulla da verificare (risposta casual), passa automaticamente.
     """
-    draft = state.get("draft", "")
+    final_draft = state.get("final_draft", "")
     executor_output = state.get("executor_output", "")
     audit_passes = state.get("audit_passes", 0)
     
@@ -26,9 +26,9 @@ def auditor_node(state: RickState) -> dict:
             "audit_passes": audit_passes + 1
         }
     
-    # Se draft vuoto, qualcosa è andato storto — fail
-    if not draft or draft.strip() == "":
-        logger.error("[auditor] Empty draft, failing")
+    # Se final_draft vuoto, qualcosa è andato storto — fail
+    if not final_draft or final_draft.strip() == "":
+        logger.error("[auditor] Empty final_draft, failing")
         return {
             "audit_verdict": "fail",
             "audit_report": "Draft vuoto — persona non ha risposto.",
@@ -49,7 +49,7 @@ def auditor_node(state: RickState) -> dict:
     prompt = f"""Sei un auditor che verifica la correttezza di una risposta AI.
 
 **Draft di Rick:**
-{draft}
+{final_draft}
 
 **Output di tool/expert utilizzati:**
 {executor_output}
