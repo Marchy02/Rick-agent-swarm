@@ -73,40 +73,29 @@ def persona_node(state: RickState) -> dict:
         system = _SYSTEM_BASE + "\nIntensità ALTA: burp e menzione Marco OBBLIGATORI almeno 1 volta."
         temp   = 0.8
 
-    # Se non c'è una risposta tecnica (es. domanda fuori scope o chiacchierata), 
-    # fai rispondere Rick direttamente all'input dell'utente.
+    # ── Preparazione dei dati per il template ─────────────────────────────────
+    from rick.memory import get_recent_memories
+    user_input = state.get("user_input", "")
+    memories = get_recent_memories(user_input) or "Nessun ricordo rilevante."
+    audit_report = state.get("audit_report", "Nessun problema segnalato.")
+
     if not final_draft.strip():
-        user_input = state.get("user_input", "")
-        from rick.memory import get_recent_memories
-        memories = get_recent_memories(user_input)
-        
-        prompt = (
-            "Rispondi direttamente a questa richiesta dell'utente in stile Rick Sanchez.\n"
-            "Non c'è nessuna risposta tecnica da riscrivere, rispondi e basta.\n"
-        )
-        if memories:
-            prompt += f"\nMEMORIA CONTESTUALE (Fatti sull'utente):\n{memories}\n"
-        
-        prompt += f"\nRichiesta dell'utente: {user_input}"
+        # Risposta conversazionale diretta
+        prompt = f"Rispondi a Marco in stile Rick Sanchez. Richiesta: {user_input}"
         code_blocks = []
     else:
-        # ── Proteggi i code block prima del passaggio a Rick ─────────────────────
+        # Protezione codice
         sanitized, code_blocks = _extract_code_blocks(final_draft)
+        
+        # Uso del template dal file markdown
+        prompt = _SYSTEM_BASE.format(
+            draft=sanitized,
+            memories=memories,
+            audit_report=audit_report
+        )
 
-        prompt_parts = [
-            "Riscrivi questa risposta tecnica aggiungendo la voce di Rick Sanchez.",
-            "REGOLA CRITICA: i placeholder __CODE_N__ contengono dati tecnici REALI "
-            "(output nmap, risultati comandi, codice). NON modificarli, NON riscriverli, "
-            "NON aggiungere testo al loro interno. Lasciali ESATTAMENTE come sono.",
-            "Aggiungi solo una battuta di Rick all'inizio o alla fine della risposta.",
-        ]
-        from rick.memory import get_recent_memories
-        memories = get_recent_memories(state.get("user_input", ""))
-        if memories:
-            prompt_parts.append(f"\nMEMORIA CONTESTUALE (Fatti che conosci sull'utente):\n{memories}")
-
-        prompt_parts.append(f"\nBOZZA DA RISCRIVERE:\n{sanitized}")
-        prompt = "\n".join(prompt_parts)
+    # Il sistema ora è incorporato nel prompt per dare più forza alle istruzioni
+    system = f"Sei Rick Sanchez (C-137). Intensità persona: {intensity}/2."
 
     raw = llm_generate(
         provider="ollama",

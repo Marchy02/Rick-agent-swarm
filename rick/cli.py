@@ -125,8 +125,37 @@ def main() -> None:
     t_start = time.time()
 
     from sandbox import RickSandbox
+    # ── Esecuzione del grafo con streaming ────────────────────────────────────
+    final_state = initial_state
     try:
-        final_state = graph.invoke(initial_state)
+        # Usiamo stream per vedere i nodi in tempo reale
+        for event in graph.stream(initial_state, config={"recursion_limit": 50}):
+            # In LangGraph stream default, event è un dizionario {node_name: {updates}}
+            if not isinstance(event, dict):
+                continue
+                
+            for node_name, state_update in event.items():
+                if not isinstance(state_update, dict):
+                    continue
+                
+                # Feedback visivo pulito
+                if node_name == "persona":
+                    if state_update.get("final_response"):
+                        print(" Rick ha finito di elaborare la risposta.")
+                    else:
+                        print(" Rick sta iniziando a parlare...")
+                elif node_name == "manager":
+                    print(" Rick sta analizzando la tua richiesta...")
+                elif node_name == "expert_dispatcher":
+                    print("Chiamata agli esperti in corso...")
+                elif node_name == "auditor":
+                    print("Verifica della risposta (Audit)...")
+                
+                # Aggiorniamo lo stato finale
+                final_state.update(state_update)
+                
+    except Exception as e:
+        logger.error(f"Errore durante l'esecuzione del grafo: {e}")
     finally:
         # Pulisce la sandbox a fine sessione
         RickSandbox(session_id).cleanup()
@@ -145,7 +174,7 @@ def main() -> None:
         print(f"\n[INTENTO] {intent}")
     
     if skills and skills != ["none"]:
-        print(f"📋 [PIANO] {', '.join(skills)}")
+        print(f" [PIANO] {', '.join(skills)}")
         for step in plan:
             print(f"  └─ Passo {step.get('step')}: {step.get('task')} ({step.get('skill')})")
     

@@ -31,7 +31,28 @@ EXPERTS: dict[str, dict] = {
         "prompt_file": "coder.md",
         "temperature": 0.2,
         "keep_alive":  "0",
-        "description": "backend, Python, Go, Bash, debugging, code review, refactor, script",
+        "description": "backend, Python, Go, C++, debugging, code review, refactor, logica complessa",
+    },
+    "sysadmin": {
+        "model":       "qwen2.5:7b",
+        "prompt_file": "sysadmin.md",
+        "temperature": 0.1,
+        "keep_alive":  "5m",
+        "description": "script Bash, automazione Linux, amministrazione sistema, configurazione server, networking, sicurezza",
+    },
+    "pentester": {
+        "model":       "qwen2.5:7b",
+        "prompt_file": "pentester.md",
+        "temperature": 0.4,
+        "keep_alive":  "5m",
+        "description": "security audit, vulnerabilità, CTF, exploit, analisi sicurezza",
+    },
+    "researcher": {
+        "model":       "qwen2.5:7b",
+        "prompt_file": "researcher.md",
+        "temperature": 0.5,
+        "keep_alive":  "5m",
+        "description": "ricerca informazioni, documentazione, analisi dati, sintesi argomenti complessi",
     },
     "psychologist": {
         "model":       "qwen2.5:7b",
@@ -43,7 +64,7 @@ EXPERTS: dict[str, dict] = {
 }
 
 # ── Persona ───────────────────────────────────────────────────────────────────
-PERSONA_INTENSITY = 1  # ← FIXED: era 2 (troppo esagerato)
+PERSONA_INTENSITY = 2  # ← FIXED: era 1 (troppo sobrio)
 
 # ── Auditor ──────────────────────────────────────────────────────────────────
 MAX_AUDIT_RETRIES = 2   # dopo N retry, forza pass
