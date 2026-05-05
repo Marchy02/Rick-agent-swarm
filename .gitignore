@@ -36,6 +36,10 @@ data/chroma_db/
 data/traces/
 *.log
 Documento senza titolo.pdf
+back-up/
+backup/
+*.bak
+*.tmp
 
 # IDEs
 .idea/
