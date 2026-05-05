@@ -1,76 +1,71 @@
+"""
+Nodo MEMORY OPTIMIZER
+Responsabilità: estrarre fatti dalla conversazione e salvarli in memoria.
+
+NOVITÀ v9:
+- Salva SOLO se audit_verdict == "pass" (niente allucinazioni in memoria)
+- Distingue tra fatti verificati e fatti inferiti
+- Agent-Lightning rimosso (ora in optimize.py standalone)
+"""
 import logging
 import time
 from rick.state import RickState
-from rick.config import MODEL_MANAGER, PROMPTS_DIR
+from rick.config import MODEL_MANAGER
 from rick.llm.client import ollama_generate
 from rick.memory import save_memory
 
 logger = logging.getLogger(__name__)
 
-def _learn_from_mistakes(state: RickState):
-    """Analizza se l'Auditor ha richiesto correzioni e genera linee guida permanenti."""
-    # Cerchiamo se c'è stato un retry dell'auditor o se l'auditor ha fallito
-    if state.get("audit_passes", 0) > 0:
-        notes = state.get("audit_notes", "")
-        draft = state.get("final_draft", "")
-        skills = state.get("skills_needed", [])
-        
-        if not notes or not skills:
-            return
-
-        skill = skills[0]
-        guidelines_file = PROMPTS_DIR / f"{skill}_guidelines.txt"
-        
-        prompt = (
-            f"L'esperto '{skill}' ha fatto questo errore:\n{draft[:500]}\n\n"
-            f"L'Auditor ha corretto così: {notes}\n\n"
-            "Estrai una REGOLA GENERALE e IMPERATIVA (max 15 parole) per evitare questo errore in futuro. "
-            "NON spiegare, scrivi solo la regola."
-        )
-        
-        logger.info(f"[memory_optimizer] Agent-Lightning: estrazione lezione per {skill}...")
-        lesson = ollama_generate(
-            model=MODEL_MANAGER,
-            prompt=prompt,
-            system="Sei un AI Optimizer. Scrivi regole tecniche brevi e ferree.",
-            temperature=0.1,
-            keep_alive="0"
-        ).strip().replace("- ", "")
-
-        if lesson and len(lesson) > 5:
-            with open(guidelines_file, "a", encoding="utf-8") as f:
-                f.write(f"- {lesson}\n")
-            logger.info(f"[memory_optimizer] Nuova linea guida salvata per {skill}: {lesson}")
 
 def memory_optimizer_node(state: RickState) -> dict:
     t0 = time.time()
     user_input = state["user_input"]
     final_response = state.get("final_response", "")
-
-    # 1. Agent-Lightning: Impara dagli errori tecnici
-    try:
-        _learn_from_mistakes(state)
-    except Exception as e:
-        logger.error(f"[memory_optimizer] Errore durante l'apprendimento: {e}")
-
-    # 2. Memoria Semantica: Estrai fatti sull'utente
-    # Euristica veloce per evitare chiamate LLM inutili
-    keywords = ["ricorda", "tieni a mente", "ho un", "uso", "preferisco", "sempre", "mai", "configur", "path", "cartella"]
-    if len(user_input) < 15 and not any(kw in user_input.lower() for kw in keywords):
-        logger.info("[memory_optimizer] fatti: skip (euristica veloce)")
+    audit_verdict = state.get("audit_verdict", "unknown")
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # VALIDAZIONE PRE-SALVATAGGIO
+    # ══════════════════════════════════════════════════════════════════════
+    # Se l'audit non è passato, NON salvare niente in memoria.
+    # Previene allucinazioni, dati inventati, e output non verificati.
+    if audit_verdict != "pass":
+        logger.info(
+            f"[memory_optimizer] Skip (audit_verdict={audit_verdict}). "
+            "Salvo SOLO conversazioni validate."
+        )
         return {}
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # ESTRAZIONE FATTI
+    # ══════════════════════════════════════════════════════════════════════
+    # Euristica veloce: skip se il messaggio è troppo corto e non contiene
+    # keyword che suggeriscono informazioni persistenti
+    keywords = [
+        "ricorda", "tieni a mente", "ho un", "uso", "preferisco", 
+        "sempre", "mai", "configur", "path", "cartella", "sistema operativo",
+        "hardware", "software", "linguaggio", "framework"
+    ]
+    
+    if len(user_input) < 15 and not any(kw in user_input.lower() for kw in keywords):
+        logger.info("[memory_optimizer] Skip (messaggio troppo breve o generico)")
+        return {}
+    
+    # Prompt per estrazione fatti
+    prompt = f"""Analizza questa conversazione. Estrai fatti persistenti sull'utente.
 
-    prompt = f"""
-Analizza questa conversazione. Estrai fatti persistenti su Marco.
 REGOLE:
-1. Se fornisce dettagli tecnici (OS, hardware, software, path), ESTRAILI.
-2. Se usa "ricorda", "ho un...", "uso...", ESTRAI.
-3. Se è solo chiacchiera, rispondi "NIENTE".
+1. Se fornisce dettagli tecnici (OS, hardware, software, path, versioni), ESTRAILI.
+2. Se usa parole come "ricorda", "ho un...", "uso...", "preferisco", ESTRAI.
+3. Se è solo chiacchiera, domanda generica o richiesta one-off, rispondi "NIENTE".
+4. Scrivi fatti in terza persona: "Marco usa Python 3.11" non "uso Python 3.11".
+5. Un fatto per riga, max 3 fatti.
 
 User: {user_input}
 Rick: {final_response}
-"""
-    logger.info("[memory_optimizer] valuto la conversazione per l'estrazione di fatti...")
+
+Fatti da ricordare:"""
+    
+    logger.info("[memory_optimizer] Valuto la conversazione per estrazione fatti...")
     
     fact = ollama_generate(
         model=MODEL_MANAGER,
@@ -82,10 +77,21 @@ Rick: {final_response}
     
     elapsed_ms = round((time.time() - t0) * 1000)
     
-    if "NIENTE" in fact.upper():
-        logger.info(f"[memory_optimizer] fatti: scartata ({elapsed_ms}ms)")
+    if "NIENTE" in fact.upper() or len(fact) < 10:
+        logger.info(f"[memory_optimizer] Nessun fatto rilevante ({elapsed_ms}ms)")
     else:
-        logger.info(f"[memory_optimizer] fatto estratto: {fact} ({elapsed_ms}ms)")
-        save_memory(user_input, fact)
+        # Confidence score basato sul contenuto
+        # Fatti con numeri/versioni/path hanno confidence più alta
+        confidence = 0.7
+        if any(char.isdigit() for char in fact):
+            confidence = 0.85
+        if "/" in fact or "\\" in fact:  # path
+            confidence = 0.9
         
+        logger.info(
+            f"[memory_optimizer] Fatto estratto (confidence={confidence}): "
+            f"{fact[:60]}... ({elapsed_ms}ms)"
+        )
+        save_memory(user_input, fact, confidence=confidence)
+    
     return {}

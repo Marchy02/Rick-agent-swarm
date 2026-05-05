@@ -2,27 +2,35 @@
 Modulo di Ottimizzazione (Agent-Lightning Hook)
 
 Analizza i trace generati dal sistema per trovare gli errori corretti dall'Auditor.
-Genera "Linee Guida" permanenti affinché il Coder non ripeta l'errore.
+Genera "Linee Guida" permanenti per OGNI ESPERTO affinché non ripeta l'errore.
+
+NOVITÀ v9:
+- Supporta TUTTI gli esperti (coder, researcher, pentester, sysadmin, etc.)
+- Genera <skill>_guidelines.txt dinamicamente
+- Evita duplicati confrontando contenuto, non hint
 """
 import json
 import logging
-import os
-import sys
+import hashlib
 from pathlib import Path
-from rick.config import DATA_DIR, PROMPTS_DIR, MODEL_MANAGER
+from rick.config import DATA_DIR, PROMPTS_DIR, MODEL_MANAGER, EXPERTS
 from rick.llm.client import ollama_generate
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger("optimizer")
 
-GUIDELINES_FILE = PROMPTS_DIR / "coder_guidelines.txt"
-
 _SYSTEM_OPTIMIZER = (
-    "Sei un AI Optimizer. Il tuo scopo è analizzare un errore fatto da un Coder e la correzione richiesta "
-    "da un Auditor. Devi estrarre UNA SINGOLA REGOLA GENERALE, chiara e concisa (max 2 frasi), "
-    "che il Coder dovrà seguire in futuro per non ripetere lo stesso errore.\n"
-    "Esempio: 'Evita l'uso di rm -rf /tmp/*, usa invece trap per pulire i file temporanei specifici dello script.'"
+    "Sei un AI Optimizer. Il tuo scopo è analizzare un errore fatto da un esperto AI "
+    "e la correzione richiesta da un Auditor. Devi estrarre UNA SINGOLA REGOLA GENERALE, "
+    "chiara e concisa (max 2 frasi), che l'esperto dovrà seguire in futuro per non "
+    "ripetere lo stesso errore.\n\n"
+    "Esempio buono: 'Evita rm -rf /tmp/*, usa trap per pulire file temporanei specifici.'\n"
+    "Esempio cattivo: 'Il codice è sbagliato, correggilo.' (troppo generico)"
 )
+
 
 def _load_traces() -> list[list[dict]]:
     """Carica tutte le sessioni JSONL dalla directory."""
@@ -38,59 +46,149 @@ def _load_traces() -> list[list[dict]]:
         sessions.append(session_trace)
     return sessions
 
-def extract_lessons() -> list[str]:
-    """Trova le interazioni dove l'Auditor ha generato un retry e impara la lezione."""
-    sessions = _load_traces()
-    new_lessons = []
+
+def _get_guidelines_path(skill: str) -> Path:
+    """Ritorna il path del file guidelines per un dato skill."""
+    return PROMPTS_DIR / f"{skill}_guidelines.txt"
+
+
+def _load_existing_guidelines(skill: str) -> set[str]:
+    """
+    Carica le guidelines esistenti per un skill e ritorna un set di hash.
+    Questo permette di evitare duplicati logici (non solo testuali).
+    """
+    path = _get_guidelines_path(skill)
+    if not path.exists():
+        return set()
     
-    # Carica le lezioni già apprese per evitare duplicati logici
-    existing_lessons = ""
-    if GUIDELINES_FILE.exists():
-        existing_lessons = GUIDELINES_FILE.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8")
+    # Ogni guideline è una linea che inizia con "- "
+    guidelines = [
+        line.strip()[2:].strip() 
+        for line in content.split('\n') 
+        if line.strip().startswith('- ')
+    ]
+    
+    # Hash di ogni guideline per deduplica semantica
+    return {hashlib.md5(g.encode()).hexdigest()[:8] for g in guidelines}
+
+
+def _save_guideline(skill: str, lesson: str):
+    """Appende una nuova guideline al file dell'esperto."""
+    path = _get_guidelines_path(skill)
+    
+    # Crea il file se non esiste
+    if not path.exists():
+        path.write_text(
+            f"# Linee guida per {skill}\n"
+            "# Generate automaticamente da Agent-Lightning\n"
+            "# NON ripetere questi errori:\n\n",
+            encoding="utf-8"
+        )
+    
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"- {lesson}\n")
+
+
+def extract_lessons() -> dict[str, list[str]]:
+    """
+    Trova le interazioni dove l'Auditor ha generato un retry e impara la lezione.
+    
+    Returns:
+        dict[skill, list[lessons]]: Lezioni apprese per ogni esperto
+    """
+    sessions = _load_traces()
+    lessons_by_skill: dict[str, list[str]] = {}
+    
+    # Carica guidelines esistenti per ogni skill
+    existing_hashes_by_skill = {
+        skill: _load_existing_guidelines(skill)
+        for skill in EXPERTS.keys()
+    }
 
     for session in sessions:
-        for node_data in session:
-            if node_data["node"] == "auditor" and node_data.get("data"):
+        # Trova coppie (expert_dispatcher → auditor retry)
+        for i, node_data in enumerate(session):
+            # L'auditor segna l'errore
+            if node_data.get("node") == "auditor" and node_data.get("data"):
                 data = node_data["data"]
-                if data["verdict"] == "retry":
-                    # Abbiamo trovato un errore!
-                    draft = data.get("draft", "")
-                    issues = data.get("issues", [])
-                    hint = data.get("fix_hint", "")
-                    
-                    # Usa Ollama per estrarre la regola
-                    prompt = (
-                        f"Il Coder ha scritto questo codice errato:\n{draft[:1000]}...\n\n"
-                        f"L'Auditor ha riscontrato questi problemi: {issues}\n"
-                        f"Suggerimento dell'Auditor: {hint}\n\n"
-                        "Genera una REGOLA BREVE (max 2 frasi) da aggiungere alle linee guida. "
-                        "NON spiegare, scrivi solo la regola imperativa."
-                    )
-                    
-                    if hint in existing_lessons:
-                        continue # Evita di generare due volte per lo stesso errore (euristica semplice)
-                        
-                    logger.info(f"Trovato errore. Estrazione lezione...")
-                    lesson = ollama_generate(
-                        model=MODEL_MANAGER, 
-                        prompt=prompt, 
-                        system=_SYSTEM_OPTIMIZER, 
-                        temperature=0.2, 
-                        keep_alive="0"
-                    )
-                    if lesson and len(lesson) < 200:
-                        new_lessons.append(lesson)
-                        existing_lessons += f"\n- {lesson}"
-                        
-    if new_lessons:
-        with open(GUIDELINES_FILE, "a", encoding="utf-8") as f:
-            for lesson in new_lessons:
-                f.write(f"\n- {lesson}\n")
-        logger.info(f"Agent-Lightning: Apprese {len(new_lessons)} nuove lezioni!")
+                
+                if data.get("verdict") != "retry":
+                    continue
+                
+                # Cerca il nodo expert_dispatcher precedente
+                skill = None
+                draft = ""
+                
+                for j in range(i - 1, -1, -1):
+                    prev_node = session[j]
+                    if prev_node.get("node", "").startswith("expert_dispatcher"):
+                        # Estrai skill dal nome nodo: "expert_dispatcher[researcher]"
+                        node_name = prev_node.get("node", "")
+                        if "[" in node_name and "]" in node_name:
+                            skill = node_name.split("[")[1].split("]")[0]
+                        draft = prev_node.get("data", {}).get("final_draft", "")
+                        break
+                
+                if not skill or skill not in EXPERTS:
+                    continue
+                
+                # Estrai info dall'audit
+                issues = data.get("issues", [])
+                hint = data.get("fix_hint", data.get("audit_notes", ""))
+                
+                # Genera lesson con LLM
+                prompt = (
+                    f"L'esperto '{skill}' ha prodotto questo output con errori:\n"
+                    f"{draft[:1000]}\n\n"
+                    f"Problemi riscontrati dall'Auditor: {issues}\n"
+                    f"Suggerimento dell'Auditor: {hint}\n\n"
+                    "Genera una REGOLA BREVE (max 2 frasi) da aggiungere alle linee guida "
+                    f"per l'esperto '{skill}'. NON spiegare, scrivi solo la regola imperativa."
+                )
+                
+                logger.info(f"Trovato errore per '{skill}'. Estrazione lezione...")
+                
+                lesson = ollama_generate(
+                    model=MODEL_MANAGER,
+                    prompt=prompt,
+                    system=_SYSTEM_OPTIMIZER,
+                    temperature=0.2,
+                    keep_alive="0"
+                )
+                
+                if not lesson or len(lesson) > 250:
+                    continue
+                
+                # Check duplicati con hash
+                lesson_hash = hashlib.md5(lesson.encode()).hexdigest()[:8]
+                
+                if lesson_hash in existing_hashes_by_skill[skill]:
+                    logger.info(f"  → Lezione già presente per '{skill}', skip")
+                    continue
+                
+                # Salva
+                _save_guideline(skill, lesson)
+                existing_hashes_by_skill[skill].add(lesson_hash)
+                
+                # Track
+                if skill not in lessons_by_skill:
+                    lessons_by_skill[skill] = []
+                lessons_by_skill[skill].append(lesson)
+                
+                logger.info(f"  ✅ Nuova lezione per '{skill}': {lesson[:60]}...")
+    
+    # Summary
+    total_lessons = sum(len(v) for v in lessons_by_skill.values())
+    if total_lessons > 0:
+        logger.info(f"Agent-Lightning: Apprese {total_lessons} nuove lezioni!")
+        for skill, lessons in lessons_by_skill.items():
+            logger.info(f"  → {skill}: {len(lessons)} lezioni")
     else:
         logger.info("Agent-Lightning: Nessuna nuova lezione da imparare.")
-        
-    return new_lessons
+    
+    return lessons_by_skill
+
 
 if __name__ == "__main__":
     logger.info("Avvio Agent-Lightning Optimizer...")

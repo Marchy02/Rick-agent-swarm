@@ -1,13 +1,15 @@
 """
 Nodo OUTPUT VALIDATOR
-Responsabilità: verificare che l'esperto abbia usato i risultati reali dell'executor
-e non abbia inventato numeri/versioni.
+Responsabilità: 
+1. Verificare che l'esperto abbia usato i risultati reali dell'executor
+2. Salvare i risultati verificati dell'executor nella memoria come "fatti verificati"
 
 Inserito tra executor e auditor per bloccare allucinazioni prima che arrivino all'auditor.
 """
 import re
 import logging
 from rick.state import RickState
+from rick.memory import save_verified_fact
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,63 @@ def _extract_numbers(text: str) -> set[str]:
     return set(re.findall(r'\b\d+(?:\.\d+)?(?!\.\d)\b', text))
 
 
+def _extract_executor_command(executor_output: str) -> str | None:
+    """Estrae il comando eseguito dall'output dell'executor."""
+    # Cerca pattern tipo "curl -s ..." o "import requests; ..."
+    lines = executor_output.split('\n')
+    for line in lines:
+        if 'curl' in line.lower() or 'wget' in line.lower():
+            return line.strip()
+        if 'import' in line and 'requests' in line:
+            return line.strip()
+    return None
+
+
+def _save_executor_results_to_memory(executor_output: str, user_input: str):
+    """
+    Salva i risultati dell'executor come fatti verificati nella memoria.
+    
+    Esempi di fatti verificati:
+    - "FastAPI version 0.115.0 (verificato via curl pypi.org)"
+    - "Server risponde su porta 8080 (verificato via nmap)"
+    """
+    # Estrai il comando eseguito
+    command = _extract_executor_command(executor_output)
+    
+    # Estrai versioni e numeri significativi
+    versions = _extract_versions(executor_output)
+    
+    # Se non ci sono dati estratti, skip
+    if not versions and not command:
+        return
+    
+    # Costruisci il fatto verificato
+    facts = []
+    
+    # Versioni (es. da curl pypi)
+    if versions and command and 'pypi' in command.lower():
+        # Estrai nome package dal comando
+        pkg_match = re.search(r'pypi\.org/pypi/([^/\s"]+)', command)
+        if pkg_match:
+            pkg_name = pkg_match.group(1)
+            # Prendi la versione più recente (assumendo sia ordinata)
+            latest_ver = sorted(versions, reverse=True)[0]
+            fact = f"{pkg_name} versione {latest_ver}"
+            facts.append(fact)
+    
+    # Salva ogni fatto come verified_fact
+    for fact in facts:
+        save_verified_fact(
+            content=fact,
+            source_type="executor_output",
+            metadata={
+                "command": command[:200] if command else "unknown",
+                "user_query": user_input[:200],
+            }
+        )
+        logger.info(f"[validator] ✅ Saved verified fact: {fact}")
+
+
 def output_validator_node(state: RickState) -> dict:
     """
     Controlla se la risposta dell'esperto contiene dati inventati
@@ -33,6 +92,8 @@ def output_validator_node(state: RickState) -> dict:
     Ritorna audit_verdict="retry" se rileva allucinazioni.
     """
     outputs = state.get("expert_outputs", [])
+    user_input = state.get("user_input", "")
+    
     if len(outputs) < 2:
         # Niente da validare: serve almeno executor output + expert response
         return {}
@@ -59,6 +120,19 @@ def output_validator_node(state: RickState) -> dict:
         logger.warning("[validator] executor output trovato ma nessuna risposta esperto successiva")
         return {}
     
+    # ═══════════════════════════════════════════════════════════════════════
+    # SALVATAGGIO FATTI VERIFICATI
+    # ═══════════════════════════════════════════════════════════════════════
+    # Se l'executor è andato a buon fine, salva i risultati in memoria
+    if "Exit code: 0" in executor_output:
+        try:
+            _save_executor_results_to_memory(executor_output, user_input)
+        except Exception as e:
+            logger.error(f"[validator] Errore durante salvataggio fatti: {e}")
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # VALIDAZIONE ANTI-ALLUCINAZIONE
+    # ═══════════════════════════════════════════════════════════════════════
     # Controlla exit code
     if "Exit code: 0" not in executor_output:
         logger.warning("[validator] executor fallito (exit code != 0), skip validation")
