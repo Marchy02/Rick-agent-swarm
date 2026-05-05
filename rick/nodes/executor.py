@@ -1,6 +1,9 @@
 import logging
 import time
+import re
 from rick.state import RickState
+from rick.config import SANDBOX_TIMEOUT, MAX_EXEC_RETRIES
+from rick.memory import add_knowledge
 from sandbox import RickSandbox, extract_commands
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,28 @@ def executor_node(state: RickState) -> dict:
         )
         lines.append("──────────────────\n")
         execution_results.append("\n".join(lines))
+
+    # ── Gestione INGEST (Memoria) ─────────────────────────────────────────────
+    # Cerca tag <ingest>path/to/file</ingest>
+    ingest_tags = re.findall(r"<ingest>(.*?)</ingest>", expert_response)
+    for file_path in ingest_tags:
+        file_path = file_path.strip()
+        try:
+            # Leggiamo il file dal disco reale (o sandbox root)
+            from pathlib import Path
+            p = Path(file_path)
+            if not p.is_absolute():
+                # Se è relativo, assumiamo sia nella sandbox o nella CWD
+                pass 
+            
+            if p.exists() and p.is_file():
+                content = p.read_text(encoding="utf-8", errors="ignore")
+                add_knowledge(content, source_name=p.name)
+                execution_results.append(f"\n✅ [MEMORIA]: File '{p.name}' indicizzato con successo nel database.")
+            else:
+                execution_results.append(f"\n❌ [MEMORIA]: Impossibile trovare il file '{file_path}' per l'ingestione.")
+        except Exception as e:
+            execution_results.append(f"\n❌ [MEMORIA]: Errore durante l'ingestione di '{file_path}': {e}")
 
     elapsed_ms = round((time.time() - t0) * 1000)
     logger.info(f"[executor] giro {passes+1}: {len(commands)} cmd in {elapsed_ms}ms")

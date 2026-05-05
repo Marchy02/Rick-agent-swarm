@@ -74,8 +74,8 @@ EXPERTS: dict[str, dict] = {
     },
     "researcher": {
         # Per attivare Gemini cambia provider in "gemini" e model in "gemini-1.5-flash"
-        "provider":    "ollama",
-        "model":       "llama3:8b",
+        "provider":    "gemini",
+        "model":       "gemini-2.5-flash",
         "prompt_file": "researcher.md",
         "temperature": 0.0,
         "keep_alive":  "5m",

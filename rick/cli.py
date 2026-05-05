@@ -61,8 +61,8 @@ def main() -> None:
 
     # ── Comandi Standalone (bypassa la pipeline LLM) ──────────────────────────
     if args.ingest:
-        from rick.ingest import ingest_directory
-        ingest_directory(args.ingest)
+        from rick.ingest import ingest_anything
+        ingest_anything(args.ingest)
         sys.exit(0)
 
     if args.wipe_memory:

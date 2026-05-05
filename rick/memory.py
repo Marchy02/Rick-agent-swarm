@@ -34,17 +34,23 @@ class OllamaEmbedder(chromadb.EmbeddingFunction):
     def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
         embeddings = []
         for text in input:
-            try:
-                res = requests.post(
-                    f"{OLLAMA_BASE_URL}/api/embeddings",
-                    json={"model": EMBED_MODEL, "prompt": text},
-                    timeout=30
-                )
-                res.raise_for_status()
-                embeddings.append(res.json()["embedding"])
-            except Exception as e:
-                logger.error(f"[memory] Embedding error: {e}")
-                raise e
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    res = requests.post(
+                        f"{OLLAMA_BASE_URL}/api/embeddings",
+                        json={"model": EMBED_MODEL, "prompt": text},
+                        timeout=30
+                    )
+                    res.raise_for_status()
+                    embeddings.append(res.json()["embedding"])
+                    break  # Successo, esce dal loop di retry
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"[memory] Embedding error dopo {max_retries} tentativi: {e}")
+                        raise e
+                    logger.warning(f"[memory] Embedding error (tentativo {attempt+1}/{max_retries}), riprovo tra 2s...")
+                    time.sleep(2)
         return embeddings
 
 
@@ -75,14 +81,20 @@ def _init():
         raise
 
 
-def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
-    """Split text in chunk da ~size parole."""
-    words = text.split()
+def _chunk_text(text: str, size: int = 1500) -> list[str]:
+    """Split text in chunk da massimo ~size caratteri, cercando di non troncare parole."""
     chunks = []
-    for i in range(0, len(words), size):
-        chunk = " ".join(words[i:i+size])
-        if chunk.strip():
-            chunks.append(chunk)
+    text = text.strip()
+    while text:
+        if len(text) <= size:
+            chunks.append(text)
+            break
+        # Cerca l'ultimo spazio entro il limite
+        split_at = text.rfind(' ', 0, size)
+        if split_at == -1:
+            split_at = size  # Nessuno spazio, taglia brutalmente
+        chunks.append(text[:split_at].strip())
+        text = text[split_at:].strip()
     return chunks
 
 
@@ -293,6 +305,7 @@ def add_knowledge(
         logger.info(f"[memory] Added {added}/{len(chunks)} chunks from: {source_name}")
     except Exception as e:
         logger.error(f"[memory] Add knowledge error: {e}")
+        raise e  # Rilancia l'errore così ingest.py lo cattura e non stampa [OK]
 
 
 def cleanup_old_versions(source_name: str, keep_latest: int = 1):
