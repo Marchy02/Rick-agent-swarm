@@ -31,6 +31,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 KNOWN_ISSUES.md
+MISSION_IMPOSSIBLE_CLAUDE.md
 
 # Data and Logs
 data/chroma_db/
