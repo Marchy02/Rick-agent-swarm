@@ -10,8 +10,8 @@ import json
 import logging
 import time
 from rick.state import RickState
-from rick.config import MODEL_MANAGER, PROMPTS_DIR, EXPERTS
-from rick.llm.client import ollama_generate
+from rick.config import MODEL_MANAGER, PROVIDER_MANAGER, PROMPTS_DIR, EXPERTS
+from rick.llm.client import llm_generate
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ def manager_node(state: RickState) -> dict:
 
     logger.info(f"[manager] elaboro: {user_input[:80]!r}")
 
-    raw = ollama_generate(
+    raw = llm_generate(
+        provider=PROVIDER_MANAGER,
         model=MODEL_MANAGER,
         prompt=user_input,
         system=system,
@@ -73,7 +74,8 @@ def manager_node(state: RickState) -> dict:
     # Retry se il JSON è malformato
     if parsed is None:
         logger.warning("[manager] JSON malformato, retry...")
-        raw2 = ollama_generate(
+        raw2 = llm_generate(
+            provider=PROVIDER_MANAGER,
             model=MODEL_MANAGER,
             prompt=f"Rispondi SOLO con JSON valido secondo lo schema.\n\nRichiesta: {user_input}",
             system=system,

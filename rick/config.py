@@ -21,20 +21,27 @@ OLLAMA_TIMEOUT  = 120  # secondi
 
 # ── Modelli base ─────────────────────────────────────────────────────────────
 MODEL_MANAGER  = "qwen2.5:7b"
+PROVIDER_MANAGER = "ollama"
+
 MODEL_AUDITOR  = "qwen2.5:7b"
+PROVIDER_AUDITOR = "ollama"
+
 MODEL_PERSONA  = "qwen2.5:7b"
+PROVIDER_PERSONA = "ollama"
 
 
 # ── Registry esperti ─────────────────────────────────────────────────────────
 # Ogni voce descrive un esperto invocabile dal manager.
 # Campi:
-#   model        – modello Ollama da usare
+#   provider     - "ollama" (locale) o "gemini" (cloud Google)
+#   model        – nome del modello (es. "qwen2.5-coder:7b" o "gemini-1.5-flash")
 #   prompt_file  – nome file in rick/llm/prompts/ (senza path)
 #   temperature  – temperatura generazione (0.0 = deterministico, 1.0 = creativo)
-#   keep_alive   – quanto tenere il modello in RAM ("0" = scarica subito)
+#   keep_alive   – quanto tenere il modello in RAM ("0" = scarica subito, solo per ollama)
 #   description  – usata per auto-popolare il system prompt del manager
 EXPERTS: dict[str, dict] = {
     "coder": {
+        "provider":    "ollama",
         "model":       "qwen2.5-coder:7b",
         "prompt_file": "coder.md",
         "temperature": 0.1,
@@ -42,6 +49,7 @@ EXPERTS: dict[str, dict] = {
         "description": "backend, Python, Go, Bash, debugging, code review, refactor, script",
     },
     "psychologist": {
+        "provider":    "ollama",
         "model":       "qwen2.5:7b",
         "prompt_file": "psychologist.md",
         "temperature": 0.4,
@@ -49,6 +57,7 @@ EXPERTS: dict[str, dict] = {
         "description": "analisi emotiva, consigli relazionali, supporto psicologico, benessere mentale",
     },
     "sysadmin": {
+        "provider":    "ollama",
         "model":       "qwen2.5-coder:7b",
         "prompt_file": "sysadmin.md",
         "temperature": 0.0,
@@ -56,6 +65,7 @@ EXPERTS: dict[str, dict] = {
         "description": "bash, linux, networking, system administration, ping, shell commands, docker",
     },
     "pentester": {
+        "provider":    "ollama",
         "model":       "qwen2.5-coder:7b",
         "prompt_file": "pentester.md",
         "temperature": 0.0,
@@ -63,18 +73,11 @@ EXPERTS: dict[str, dict] = {
         "description": "hacking, penetration testing, nmap, exploit, security, vulnerabilità, red team, offensive",
     },
     "researcher": {
-        # ⚠️ IMPORTANTE: usa un modello PIÙ GRANDE per il researcher
-        # I modelli 7B tendono ad allucinare nonostante le istruzioni.
-        # Opzioni raccomandate (in ordine di preferenza):
-        #   - qwen2.5:32b  (migliore, richiede ~20GB VRAM)
-        #   - qwen2.5:14b  (buon compromesso, ~9GB VRAM)
-        #   - llama3.1:8b  (alternativa se non hai Qwen 14B)
-        #
-        # Se usi ancora 7b, aspettati occasionali allucinazioni nonostante
-        # le istruzioni del prompt. I modelli piccoli "inventano" per completezza.
-        "model":       "llama3:8b",  # ← CAMBIATO da 7b a 14b
+        # Per attivare Gemini cambia provider in "gemini" e model in "gemini-1.5-flash"
+        "provider":    "ollama",
+        "model":       "llama3:8b",
         "prompt_file": "researcher.md",
-        "temperature": 0.0,             # ← CAMBIATO da 0.3 a 0.0 (zero creatività)
+        "temperature": 0.0,
         "keep_alive":  "5m",
         "description": "ricerca internet, documentazione, versioni librerie, news, curl, pypi, ricerca web, cerca online",
     },

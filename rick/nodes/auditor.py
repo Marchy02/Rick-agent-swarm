@@ -1,3 +1,4 @@
+import rick.config as cfg
 """
 Nodo AUDITOR
 Responsabilità: verificare final_draft contro il plan.
@@ -9,7 +10,7 @@ import logging
 import time
 from rick.state import RickState
 from rick.config import MODEL_AUDITOR, PROMPTS_DIR, MAX_AUDIT_RETRIES
-from rick.llm.client import ollama_generate
+from rick.llm.client import llm_generate
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,8 @@ def auditor_node(state: RickState) -> dict:
         f"DRAFT:\n{final_draft}"
     )
 
-    raw = ollama_generate(
+    raw = llm_generate(
+        provider=cfg.PROVIDER_AUDITOR,
         model=MODEL_AUDITOR,
         prompt=prompt,
         system=_SYSTEM,

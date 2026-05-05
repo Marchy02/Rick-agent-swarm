@@ -1,3 +1,4 @@
+import rick.config as cfg
 """
 Nodo MEMORY OPTIMIZER
 Responsabilità: estrarre fatti dalla conversazione e salvarli in memoria.
@@ -11,7 +12,7 @@ import logging
 import time
 from rick.state import RickState
 from rick.config import MODEL_MANAGER
-from rick.llm.client import ollama_generate
+from rick.llm.client import llm_generate
 from rick.memory import save_memory
 
 logger = logging.getLogger(__name__)
@@ -67,8 +68,9 @@ Fatti da ricordare:"""
     
     logger.info("[memory_optimizer] Valuto la conversazione per estrazione fatti...")
     
-    fact = ollama_generate(
-        model=MODEL_MANAGER,
+    fact = llm_generate(
+        provider=cfg.PROVIDER_MANAGER,
+        model=cfg.MODEL_MANAGER,
         prompt=prompt,
         system="Sei l'ottimizzatore della memoria. Sii spietatamente conciso.",
         temperature=0.1,

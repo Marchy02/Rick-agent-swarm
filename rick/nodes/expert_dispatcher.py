@@ -16,7 +16,7 @@ import logging
 import time
 from rick.state import RickState
 from rick.config import EXPERTS, PROMPTS_DIR
-from rick.llm.client import ollama_generate
+from rick.llm.client import llm_generate
 from sandbox import extract_commands
 
 logger = logging.getLogger(__name__)
@@ -137,12 +137,13 @@ def expert_dispatcher_node(state: RickState) -> dict:
         f"(passo {step+1}/{len(skills)}, {'retry' if is_retry else 'giro 1'})"
     )
 
-    response = ollama_generate(
+    response = llm_generate(
+        provider=cfg.get("provider", "ollama"),
         model=cfg["model"],
         prompt=prompt,
         system=system,
         temperature=cfg["temperature"],
-        keep_alive=cfg["keep_alive"],
+        keep_alive=cfg.get("keep_alive", "5m"),
     )
 
     elapsed_ms = round((time.time() - t_skill) * 1000)

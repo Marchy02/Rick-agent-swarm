@@ -1,3 +1,4 @@
+import rick.config as cfg
 """
 Nodo PERSONA (filtro Rick)
 Responsabilità: riscrivere final_draft in voce Rick Sanchez.
@@ -12,7 +13,7 @@ import re
 import time
 from rick.state import RickState
 from rick.config import MODEL_PERSONA, PROMPTS_DIR, PERSONA_INTENSITY
-from rick.llm.client import ollama_generate
+from rick.llm.client import llm_generate
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,8 @@ def persona_node(state: RickState) -> dict:
         prompt_parts.append(f"\nBOZZA DA RISCRIVERE:\n{sanitized}")
         prompt = "\n".join(prompt_parts)
 
-    raw = ollama_generate(
+    raw = llm_generate(
+        provider=cfg.PROVIDER_PERSONA,
         model=MODEL_PERSONA,
         prompt=prompt,
         system=system,
