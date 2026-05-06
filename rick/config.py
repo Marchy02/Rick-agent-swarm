@@ -70,7 +70,7 @@ EXPERTS: dict[str, dict] = {
 #   3 = Rick Classico: Sarcasmo e cinismo standard della serie (Default).
 #   4 = Con Ricordi: Rick usa la memoria per fare riferimenti personali.
 #   5 = Distruttivo: Si attiva da solo se sbagli. Rick ti umilia senza pietà.
-PERSONA_IRONY = 3 
+PERSONA_IRONY = 2
 
 CODE_PLACEHOLDER_PREFIX = "██RICK_CODE_"
 CODE_PLACEHOLDER_SUFFIX = "██"

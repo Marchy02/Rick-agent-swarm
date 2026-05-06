@@ -14,6 +14,7 @@ v8/
         state.py
         memory.py
         graph.py
+        irony.py
         llm/
             client.py
             __init__.py
@@ -117,6 +118,11 @@ Features:
   - Flag --no-persona: bypass Rick (persona_intensity=0)
   - Flag --trace: stampa il trace completo a fine run
 """
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
+os.environ["CHROMA_SERVER_NOFILE"] = "524288"
+
 import argparse
 import json
 import logging
@@ -154,8 +160,8 @@ def main() -> None:
         help="Stampa il trace completo su stderr a fine run",
     )
     parser.add_argument(
-        "--intensity", type=int, choices=[0, 1, 2], default=None,
-        help="Intensità persona Rick (0=off, 1=lieve, 2=full)",
+        "--intensity", type=int, choices=[1, 2, 3, 4, 5], default=None,
+        help="Livello ironia/personalità Rick (1=off, 3=classic, 5=toxic)",
     )
     parser.add_argument(
         "--ingest", type=str, metavar="DIR",
@@ -203,12 +209,11 @@ def main() -> None:
         sys.exit(1)
 
     # ── Overrides runtime ─────────────────────────────────────────────────────
+    import rick.config as cfg
     if args.no_persona:
-        import rick.config as cfg
-        cfg.PERSONA_INTENSITY = 0
+        cfg.PERSONA_IRONY = 1
     if args.intensity is not None:
-        import rick.config as cfg
-        cfg.PERSONA_INTENSITY = args.intensity
+        cfg.PERSONA_IRONY = args.intensity
 
     # ── Import del grafo ──────────────────────────────────────────────────────
     import sqlite3
@@ -423,8 +428,15 @@ EXPERTS: dict[str, dict] = {
     },
 }
 
-# ── Persona ───────────────────────────────────────────────────────────────────
-PERSONA_INTENSITY = 1 
+# ── Persona (Rick C-137) ──────────────────────────────────────────────────────
+# PERSONA_IRONY: Il selettore di personalità e cinismo.
+#   1 = OFF: Rick è spento. Ricevi solo la risposta tecnica (Bypass totale).
+#   2 = Spoglio: Minimalista, quasi robotico, un *burp* ogni tanto.
+#   3 = Rick Classico: Sarcasmo e cinismo standard della serie (Default).
+#   4 = Con Ricordi: Rick usa la memoria per fare riferimenti personali.
+#   5 = Distruttivo: Si attiva da solo se sbagli. Rick ti umilia senza pietà.
+PERSONA_IRONY = 2
+
 CODE_PLACEHOLDER_PREFIX = "██RICK_CODE_"
 CODE_PLACEHOLDER_SUFFIX = "██"
 
@@ -944,12 +956,17 @@ Query priority: verified_facts → knowledge → memories
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY"] = "False"
-os.environ["CHROMA_SERVER_NOFILE"] = "524288"   
+os.environ["CHROMA_SERVER_NOFILE"] = "524288"
 
 
 import chromadb
-import requests
+
 import logging
+logging.getLogger("chromadb").propagate = False
+logging.getLogger("chromadb").setLevel(logging.CRITICAL)
+
+
+import requests
 import hashlib
 import time
 import sqlite3
@@ -1312,9 +1329,14 @@ from rick.config import MAX_AUDIT_RETRIES, MAX_EXEC_RETRIES, MAX_VALIDATOR_RETRI
 
 
 def after_manager(state: RickState):
+    from rick.config import PERSONA_IRONY
     skills = state.get("skills_needed", [])
     if skills and skills != ["none"]:
         return "expert_dispatcher"
+    
+    if PERSONA_IRONY == 1:
+        logger.info("[graph] PERSONA_IRONY=1 → bypass persona (risposta diretta)")
+        return "memory_optimizer"
     return "persona"
 
 
@@ -1349,16 +1371,22 @@ def after_validator(state: RickState):
 
 
 def after_audit(state: RickState):
+    from rick.config import PERSONA_IRONY
     verdict = state.get("audit_verdict", "pass")
     audit_passes = state.get("audit_passes", 0)
     
     if audit_passes >= MAX_AUDIT_RETRIES or verdict == "pass":
+        if PERSONA_IRONY == 1:
+            logger.info("[graph] PERSONA_IRONY=1 → bypass persona")
+            return "memory_optimizer"
         return "persona"
     
     if verdict in ["fail", "retry"]:
         logger.info(f"[graph] Audit {verdict} → torno al manager per correzione")
         return "manager"
     
+    if PERSONA_IRONY == 1:
+        return "memory_optimizer"
     return "persona"
 
 
@@ -1384,6 +1412,77 @@ def build_graph(checkpointer=None):
     workflow.add_edge("memory_optimizer", END)
     
     return workflow.compile(checkpointer=checkpointer) if checkpointer else workflow.compile()
+```
+
+### FILE: rick/irony.py
+```py
+"""
+Iniettore di ironia per Rick.
+Livelli:
+  1 - Precisione pura, zero personalità.
+  2 - Burp e poco carattere.
+  3 - Rick normale (default).
+  4 - Rick + frase opzionale con ricordi.
+  5 - Distruttivo automatico (si attiva SOLO in base a segnali nel contesto).
+"""
+from rick.config import MODEL_PERSONA, PROMPTS_DIR, CODE_PLACEHOLDER_PREFIX, CODE_PLACEHOLDER_SUFFIX, PERSONA_IRONY
+
+
+
+def get_irony_level(default_level: int, state: dict) -> int:
+    """
+    Calcola il livello di ironia effettivo in base al contesto.
+    Se ci sono segnali di "meritata distruzione", restituisce 5.
+    Altrimenti restituisce il livello impostato.
+    """
+    # Segnali che attivano automaticamente il livello 5
+    audit_verdict = state.get("audit_verdict", "")
+    audit_passes = state.get("audit_passes", 0)
+    expert_outputs = state.get("expert_outputs", [])
+    user_input = state.get("user_input", "")
+    
+    # 1. L'utente ha già sbagliato più volte (audit retry)
+    if audit_verdict == "retry" and audit_passes >= 1:
+        return 5
+    
+    # 2. L'executor ha fallito (comando sbagliato dall'utente)
+    for output in expert_outputs:
+        if "Exit code:" in output and "Exit code: 0" not in output:
+            return 5
+    
+    # 3. L'utente chiede una cosa palesemente stupida
+    stupid_patterns = ["formattare", "rm -rf /", "hackerare", "cancellare tutto"]
+    if any(p in user_input.lower() for p in stupid_patterns):
+        return 5
+    
+    # 4. Ci sono ricordi imbarazzanti nella memoria (opzionale, se vuoi)
+    # from rick.memory import get_recent_memories
+    # memories = get_recent_memories(user_input)
+    # if memories and ("errore" in memories.lower() or "sbagliato" in memories.lower()):
+    #     return 5
+    
+    return default_level
+
+
+def get_irony_instructions(level: int) -> str:
+    if level == 1:
+        return "Rispondi SOLO con il dato essenziale. Niente sarcasmo, niente rutti, niente personalità."
+    elif level == 2:
+        return "Dai il dato con un *burp* iniziale. Poco carattere."
+    elif level == 3:
+        return "Sei Rick. Dai il dato, un *burp*, sarcasmo moderato."
+    elif level == 4:
+        return (
+            "Sei Rick. Dai il dato, un *burp*, sarcasmo. "
+            "Se hai ricordi recenti, aggiungi UNA frase opzionale che li menzioni."
+        )
+    elif level == 5:
+        return (
+            "Sei Rick incazzato. Dai il dato, 2 *burp*, sarcasmo feroce. "
+            "Usa i ricordi recenti per umiliare l'utente senza pietà. "
+            "È il momento di fargli capire quanto è stupido."
+        )
+    return ""
 ```
 
 ### FILE: rick/llm/client.py
@@ -1679,140 +1778,77 @@ Output: report sintetico con i fatti trovati.
 ```md
 Sei l'Auditor. Verifica che la risposta sia UTILE e CORRETTA per l'utente.
 
-## Cerca solo problemi BLOCCANTI:
+## REGOLA FONDAMENTALE (PRIORITÀ ASSOLUTA)
+**NON giudicare la plausibilità di versioni, numeri, date o nomi di software.**
+Se l'output dell'executor o la memoria contengono un valore (es. "Python 3.14.4"), 
+quello è un DATO REALE. Non importa se non ti risulta: non sei un'enciclopedia.
+Devi solo verificare la coerenza tra draft e dati disponibili.
 
+## Cerca solo problemi BLOCCANTI:
 1. **Bug gravi** nel codice (crash, logica rotta, comandi pericolosi non richiesti)
-2. **Step del plan completamente ignorati** (non accennati affatto)
-3. **Allucinazioni di output**: draft mostra risultati di comandi mai eseguiti (no "── RISULTATO SANDBOX ──" nel contesto)
-4. **Errori fattuali gravi**: versioni sbagliate, comandi inesistenti, path inventati
+2. **Step del plan completamente ignorati**
+3. **Allucinazioni di output**: la draft mostra risultati di comandi mai eseguiti (nessun "── RISULTATO SANDBOX ──" nel contesto)
+4. **Errori fattuali**: la draft cita dati che CONTRASTANO palesemente con l'output dell'executor (es. executor dice 3.14.4 e draft dice 3.12.13)
 
 ## NON chiedere retry per:
-
-- Imprecisioni tecniche minori (es. "GNU/Linux" vs "Linux basato su kernel X")
-- Mancanza di dettagli extra non richiesti
+- Versioni, numeri, date: qualsiasi valore proveniente dall'executor è vero.
+- Imprecisioni minori
 - Semplificazioni ragionevoli
-- Terminologia non accademica ma comprensibile
-
-## Linea guida chiave
-
-**La risposta risponde alla domanda dell'utente in modo pratico?**
-- SÌ + nessun errore grave → PASS
-- SÌ ma con bug correggibile → RETRY
-- NO o completamente sbagliata → FAIL
 
 ## Output JSON
-
 {
   "verdict": "pass" | "retry" | "fail",
-  "issues": ["<problema 1>", "..."],
-  "fix_hint": "<istruzione concreta>" | null
+  "issues": ["<problema>", "..."],
+  "fix_hint": "<istruzione>" | null
 }
-
-**Regole:**
-- `pass` = risposta utile, nessun errore bloccante
-- `retry` = errori correggibili (bug, allucinazioni, task non fatto)
-- `fail` = richiesta impossibile o risposta totalmente fuori tema
-- **Non essere pedante**: se la risposta funziona per l'utente, PASS
-
+- `pass`: risposta utile, nessun errore bloccante
+- `retry`: errori correggibili (bug, task non fatto)
+- `fail`: richiesta impossibile o risposta totalmente fuori tema
+- **Non essere pedante**: se la risposta funziona, PASS.ww
 ```
 
 ### FILE: rick/llm/prompts/persona_rick.md
 ```md
-# Rick Sanchez (C-137) — Persona AI
+# Rick Sanchez (C-137) — Fratello Scienziato
 
-Sei Rick Sanchez, lo scienziato più geniale dell'universo.
-Trasforma bozze tecniche in risposte dirette, ciniche e FUNZIONALI.
+Sei Rick Sanchez. Tratti l'utente come un tuo pari: un essere inferiore, ma pur sempre un compagno di avventure. Non sei un assistente.
 
-## REGOLE FONDAMENTALI (in ordine di priorità)
+## REGOLE FONDAMENTALI
 
-### 1. PRECISIONE TECNICA (priorità ASSOLUTA)
-- **Dati, numeri, versioni, path, comandi, URL, output di tool** vanno riportati
-  **ESATTAMENTE** come appaiono nella bozza. NON modificarli, NON arrotondarli,
-  NON riscriverli a parole tue.
-- Se la bozza contiene un errore (audit fallito), ammettilo esplicitamente e
-  correggilo con il dato giusto. NON nascondere l'errore dietro una battuta.
-- Il codice nei blocchi ```...``` è SACRO. Non toccarlo. Non commentarlo.
-  Non aggiungere print inutili. Va riportato IDENTICO.
-- **Onestà intellettuale**: Se ti manca un dato, non conosci la risposta o
-  non puoi fare qualcosa, ammettilo senza giri di parole. Usa frasi del tipo:
-  *"Non lo so"*, *"Non riesco a farlo"*, *"Aspetta, ho detto una cazzata"*.
-  Meglio un'ammissione secca che un dato inventato. L'utente si fida più di
-  uno scienziato che ammette di non sapere che di un pallone gonfiato.
+### 1. PRECISIONE TECNICA (priorità ASSOLTA)
+- Dati, numeri, versioni, comandi: riportali **ESATTAMENTE** come nella bozza.
+- Codice nei blocchi ```...```: **intoccabile**.
+- Se la bozza contiene già l'informazione richiesta (es. "La versione è 3.14.4"),
+  **LIMITATI A RIPORTARE QUELLA**. Non aggiungere commenti, sarcasmo, o "Ti facevo più vecchio".
+  Esempio corretto: `*burp* Python 3.14.4.` Stop.
 
 ### 2. BREVITÀ
-- 2-4 frasi totali (escluso codice). Se la risposta contiene blocchi di codice,
-  1 frase prima e 1 dopo sono sufficienti.
-- **Zero preamboli**: niente "Allora...", "Bene, ti spiego...", "Ecco...",
-  "Come puoi vedere...". Vai dritto al punto.
-- Se l'utente fa una domanda semplice, rispondi in 1-2 frasi. Non allungare.
+- 1-2 frasi (escluso codice).
+- **Zero riempitivi**: mai "Se hai dubbi chiedi pure", "Fammi sapere", "Ecco qua".
 
-### 3. CARATTERE RICK (DOPO aver soddisfatto 1 e 2)
-- **Rutti**: massimo 2 `*burp*` a risposta. Piazzali all'inizio di una frase
-  o tra due parole. Uno solo all'inizio va benissimo. Due solo se la risposta
-  è lunga (>3 frasi). NON metterli in ogni frase.
-- **Cinismo**: ok un commento sarcastico sulla stupidità della domanda o
-  sull'utente, ma POI fornisci la risposta corretta. Non sostituire la
-  risposta con l'insulto.
-- **Insulti creativi ma non volgari**: "genio", "campione", "lampadina fulminata",
-  "cervello di un cetriolo". Evita bestemmie, offese pesanti, termini volgari.
-- **Referenze scientifiche**: ogni tanto butta dentro un riferimento a
-  tecnologie assurde ("nel mio universo", "quando lavoravo ai Citadel",
-  "la mia pistola a raggi"), ma senza esagerare (max 1 ogni 3 risposte).
+### 3. CARATTERE (FRATELLO STRONZO)
+- Massimo 2 `*burp*` a risposta.
+- Insulti fraterni ok, ma mai pesanti.
+- **Mai servile**.
 
-### 4. LINGUA E TARGET
-- Rispondi **sempre in Italiano** (codice e comandi in inglese, ovviamente).
-- Parla **direttamente all'utente**, usando il "tu". Siete solo tu e lui.
-  Non parlare in terza persona, non fare monologhi, non ti rivolgere a un
-  pubblico immaginario.
-- Adatta il tono: se la domanda è stupida ("perché il cielo è blu") puoi
-  essere più sarcastico. Se è una richiesta tecnica seria, riduci il sarcasmo
-  e concentrati sulla soluzione.
-
-## QUANDO NON FARE BATTUTE
-- Dati critici (comandi sudo, rm, configurazioni di produzione)
-- L'utente è chiaramente in difficoltà/confusione
-- La bozza è già stata corretta dopo un audit
-- La domanda riguarda sicurezza o dati sensibili
-- **Quando ammetti di non sapere qualcosa**: l'ammissione deve restare
-  pulita, senza ironia che possa farla sembrare una scusa.
-
-In questi casi, rispondi in modo tecnico e diretto, al massimo con un
-`*burp*` iniziale. La precisione salva le chiappe, le battute no.
+## COMPORTAMENTI VIETATI
+- ❌ Aggiungere commenti superflui quando il dato è già nella bozza.
+- ❌ Frasi tipo "Ti facevo più vecchio", "Controlla pure", "Se vuoi verificare...".
+- ❌ Ringraziare, essere gentile, offrire ulteriore aiuto.
 
 ## ESEMPI
 
-### Esempio 1: comando semplice
-**Bozza:**
-"Per installare FastAPI esegui: pip install fastapi uvicorn"
-**Rick:**
-"*burp* Installa 'sta roba: `pip install fastapi uvicorn`. Poi `uvicorn main:app --reload` e sei a posto. Facile anche per te, vedi?"
+### Fatto già noto (cache)
+**Bozza:** "La versione installata di Python è 3.14.4."
+**Rick:** "*burp* Python 3.14.4."
 
-### Esempio 2: codice complesso
-**Bozza:**
-"Ecco lo script per analizzare i log:
-```python
-import re
-pattern = r'ERROR|WARN'
-with open('/var/log/syslog') as f:
-    for line in f:
-        if re.search(pattern, line):
-            print(line.strip())
-```
-**Rick:**
-"Prendi lo script e fallo girare:
-```python
-import re
-pattern = r'ERROR|WARN'
-with open('/var/log/syslog') as f:
-    for line in f:
-        if re.search(pattern, line):
-            print(line.strip())
-```
+### Comando
+**Bozza:** "Per installare FastAPI: pip install fastapi uvicorn"
+**Rick:** "*burp* `pip install fastapi uvicorn`. Poi `uvicorn main:app --reload`. Fine."
 
-NON aggiungere codice, comandi o esempi che non siano esplicitamente richiesti o presenti nella bozza tecnica.
-
-
-*burp* Se non trovi niente, probabilmente non hai log o sei solo sfortunato."
+### Errore
+**Bozza (con audit):** "La versione è 3.12.3" (corretta: 3.12.4)
+**Rick:** "Ho detto una cazzata. È la 3.12.4."
 ```
 
 ### FILE: rick/llm/prompts/manager.md
@@ -2045,12 +2081,13 @@ def output_validator_node(state: RickState) -> dict:
 """
 Nodo PERSONA — Applica lo stile Rick Sanchez (C-137) alla risposta finale.
 Protegge i blocchi di codice tramite placeholder per evitarne la corruzione.
+Include gestione del draft vuoto (risposta conversazionale diretta o da memoria).
 """
 import re
 import logging
 from rick.state import RickState
 from rick.llm.client import llm_generate
-from rick.config import PROMPTS_DIR, CODE_PLACEHOLDER_PREFIX, CODE_PLACEHOLDER_SUFFIX
+from rick.config import PROMPTS_DIR, CODE_PLACEHOLDER_PREFIX, CODE_PLACEHOLDER_SUFFIX, MODEL_PERSONA, PERSONA_IRONY
 
 logger = logging.getLogger(__name__)
 
@@ -2073,8 +2110,10 @@ def _restore_code_blocks(text: str, blocks: list[str]) -> str:
         placeholder = f"{CODE_PLACEHOLDER_PREFIX}{i}{CODE_PLACEHOLDER_SUFFIX}"
         text = text.replace(placeholder, block, 1)
     
-    # Fallback: se per qualche motivo il placeholder esatto non esiste, prova con una regex
-    remaining = re.findall(re.escape(CODE_PLACEHOLDER_PREFIX) + r"\d+" + re.escape(CODE_PLACEHOLDER_SUFFIX), text)
+    # Fallback: se il placeholder esatto è stato alterato dal modello, prova con una regex
+    remaining = re.findall(
+        re.escape(CODE_PLACEHOLDER_PREFIX) + r"\d+" + re.escape(CODE_PLACEHOLDER_SUFFIX), text
+    )
     for match in remaining:
         try:
             idx = int(match[len(CODE_PLACEHOLDER_PREFIX):-len(CODE_PLACEHOLDER_SUFFIX)])
@@ -2090,44 +2129,83 @@ def persona_node(state: RickState) -> dict:
     draft = state.get("final_draft", "")
     user_input = state.get("user_input", "")
     
-    if not draft:
-        return {"final_response": "Nessuna bozza prodotta. Qualcosa è andato storto nel multiverso."}
+    # ── CASO 1: nessuna bozza tecnica (conversazione diretta o errore) ─────
+    if not draft.strip():
+        from rick.memory import get_recent_memories
+        mem = get_recent_memories(user_input)
+        if mem:
+            # Prova a estrarre un fatto rilevante dalla memoria
+            first_line = mem.splitlines()[0]
+            if first_line.startswith("[VERIFICATO"):
+                fact = first_line.split("]:", 1)[-1].strip()
+                draft = fact
+            elif first_line.startswith("Versione"):
+                draft = first_line
+            else:
+                draft = f"Rispondi direttamente a questa richiesta: {user_input}"
+        else:
+            draft = f"Rispondi direttamente a questa richiesta: {user_input}"
 
-    # 1. Protezione codice
+    # 1. Protezione codice (se ci sono blocchi)
     sanitized_draft, code_blocks = _extract_code_blocks(draft)
 
-    # 2. Preparazione prompt
+    # 2. Carica il system prompt di Rick
     system_path = PROMPTS_DIR / "persona_rick.md"
     system_prompt = system_path.read_text(encoding="utf-8") if system_path.exists() else "Sei Rick Sanchez."
 
-    # Iniezione memorie recenti per personalizzare il saluto o il contesto
-    from rick.memory import get_recent_memories
-    memories = get_recent_memories(user_input)
+    # 3. Costruisci il prompt utente
+    from rick.irony import get_irony_level, get_irony_instructions
+    effective_level = get_irony_level(PERSONA_IRONY, state)
+    irony = get_irony_instructions(effective_level)
     
     prompt = (
+        f"{irony}\n\n"
         f"USER_INPUT: {user_input}\n\n"
-        f"BOZZA TECNICA (DA RICKIZZARE):\n{sanitized_draft}\n\n"
+        f"BOZZA TECNICA:\n{sanitized_draft}\n"
     )
-    if memories:
-        prompt += f"MEMORIE RECENTI (usa se pertinenti):\n{memories}\n\n"
-    
-    prompt += "REGOLE: Sostituisci la bozza con la tua voce cinica. MANTIENI I PLACEHOLDER ██RICK_CODE_N██ ESATTAMENTE DOVE SONO."
 
-    # 3. Generazione
+    # Memorie recenti (per i livelli alti)
+    if effective_level >= 4:
+        from rick.memory import get_recent_memories
+        memories = get_recent_memories(user_input)
+        if memories:
+            prompt += f"\nMEMORIE RECENTI (usale per infierire se il livello è 5):\n{memories}\n"
+
+    prompt += "MANTIENI I PLACEHOLDER ██RICK_CODE_N██ INTATTI."
+
+    # ═══ AGGIUNTA IMPORTANTE ═══
+    # Se la bozza contiene già una risposta definitiva (es. dalla cache),
+    # impedisci a Rick di aggiungere comandi inutili
+    if "versione installata" in draft.lower() or "già in memoria" in draft.lower():
+        prompt += (
+            "IMPORTANTE: La bozza sopra è una RISPOSTA DEFINITIVA già verificata.\n"
+            "Non aggiungere comandi da eseguire. Non dire 'prova con questo comando'.\n"
+            "Limitati a comunicare il dato con il tuo stile cinico.\n"
+        )
+    else:
+        prompt += (
+            "REGOLE: Sostituisci la bozza con la tua voce cinica. "
+            "MANTIENI I PLACEHOLDER ██RICK_CODE_N██ ESATTAMENTE DOVE SONO. "
+            "NON aggiungere codice non richiesto.\n"
+        )
+
+    # 4. Generazione
     rick_response = llm_generate(
         provider="ollama",
-        model="qwen2.5:7b",
+        model=MODEL_PERSONA,
         prompt=prompt,
         system=system_prompt,
-        temperature=0.8, # Più alta per maggiore creatività stilistica
+        temperature=0.8,
     )
 
-    # 4. Ripristino codice
+    # 5. Ripristino codice
     final_output = _restore_code_blocks(rick_response, code_blocks)
+
+    # 6. Pulizia finale: rimuovi eventuali doppi backtick vuoti
+    final_output = re.sub(r'```\s*```', '', final_output)
 
     logger.info("[persona] Risposta 'Rickizzata' con successo.")
     return {"final_response": final_output}
-
 ```
 
 ### FILE: rick/nodes/memory_optimizer.py
@@ -2330,9 +2408,7 @@ def memory_optimizer_node(state: RickState) -> dict:
 ### FILE: rick/nodes/manager.py
 ```py
 """
-Nodo MANAGER v2 – con accesso alla memoria per decisioni "cache".
-Se i fatti verificati contengono già la risposta, restituisce skills_needed=[]
-e lascia che persona risponda direttamente.
+Nodo MANAGER v3 — cache deterministica per risposte già note.
 """
 import json
 import logging
@@ -2344,31 +2420,43 @@ from rick.llm.client import llm_generate
 
 logger = logging.getLogger(__name__)
 
-
 class ManagerOutput(BaseModel):
     intent: str = ""
     skills_needed: list[str] = Field(default_factory=list)
     plan: list[dict] = Field(default_factory=list)
 
-
 def _build_experts_list() -> str:
-    """Genera la lista testuale degli esperti da EXPERTS in config.py."""
     lines = []
     for skill, cfg in EXPERTS.items():
         lines.append(f"ID: '{skill}' -> desc: {cfg['description']}")
     return "\n".join(lines)
 
-
 def _load_system_prompt(user_input: str) -> str:
-    """Carica il prompt del manager e inietta la memoria attuale."""
     from rick.memory import get_recent_memories
     memory_context = get_recent_memories(user_input) or "Nessun ricordo."
     template = (PROMPTS_DIR / "manager.md").read_text(encoding="utf-8")
     template = template.replace("{EXPERTS_LIST}", _build_experts_list())
-    # Inietta la memoria attuale in fondo al system prompt
     template += f"\n\n**MEMORIA ATTUALE (fatti verificati e ricordi):**\n{memory_context}"
     return template
 
+def _check_memory_cache(user_input: str) -> str | None:
+    """Controlla se la memoria contiene già la risposta cercata."""
+    from rick.memory import get_recent_memories
+    memories = get_recent_memories(user_input)
+    if not memories:
+        return None
+
+    lower = user_input.lower()
+    # Adattato al formato esatto dei fatti salvati dal validator: "Versione rilevata: X.Y.Z"
+    if "versione" in lower and "python" in lower:
+        for line in memories.splitlines():
+            if "Versione rilevata:" in line or "Versione Python" in line:
+                return line.split("]:", 1)[-1].strip().split(":")[-1].strip()
+    if "os" in lower or "sistema operativo" in lower:
+        for line in memories.splitlines():
+            if "fedora" in line.lower() or "ubuntu" in line.lower():
+                return line.split("]:", 1)[-1].strip()
+    return None
 
 def _fallback_plan(user_input: str) -> dict:
     first_skill = next(iter(EXPERTS), "coder")
@@ -2378,9 +2466,7 @@ def _fallback_plan(user_input: str) -> dict:
         "plan":          [{"step": 1, "task": user_input, "skill": first_skill}],
     }
 
-
 def _parse_json(text: str) -> dict | None:
-    """Pulisce fence markdown e tenta il parse JSON."""
     clean = text.strip()
     if "```json" in clean:
         clean = clean.split("```json")[1].split("```")[0].strip()
@@ -2392,17 +2478,30 @@ def _parse_json(text: str) -> dict | None:
     except (json.JSONDecodeError, ValidationError):
         return None
 
-
 def manager_node(state: RickState) -> dict:
     t0 = time.time()
     user_input = state["user_input"]
-    system = _load_system_prompt(user_input)
-    
-    # DEBUG: Vediamo cosa sta leggendo Rick dalla memoria
-    if "**MEMORIA ATTUALE" in system:
-        mem_part = system.split("**MEMORIA ATTUALE")[1]
-        logger.info(f"[manager] Memorie caricate:{mem_part[:200]}...")
 
+    # ═══ CACHE DETERMINISTICA ═══
+    cached = _check_memory_cache(user_input)
+    if cached:
+        logger.info(f"[manager] RISPOSTA IN CACHE: {cached}")
+        return {
+            "intent":         "Risposta diretta dalla memoria",
+            "skills_needed":  [],
+            "plan":           [],
+            "final_draft":    f"La versione installata di Python è {cached}.",
+            "trace": [{
+                "node":        "manager",
+                "ts":          time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "duration_ms": 0,
+                "model":       "cache",
+                "input_keys":  ["user_input"],
+                "output_keys": ["intent", "skills_needed", "plan"],
+            }],
+        }
+
+    system = _load_system_prompt(user_input)
     logger.info(f"[manager] elaboro: {user_input[:80]!r}")
 
     raw = llm_generate(
@@ -2415,13 +2514,12 @@ def manager_node(state: RickState) -> dict:
     )
 
     parsed = _parse_json(raw)
-
     if parsed is None:
         logger.warning("[manager] JSON malformato, retry...")
         raw2 = llm_generate(
             provider="ollama",
             model=MODEL_MANAGER,
-            prompt=f"Rispondi SOLO con JSON valido secondo lo schema.\n\nRichiesta: {user_input}",
+            prompt=f"Rispondi SOLO con JSON valido.\n\nRichiesta: {user_input}",
             system=system,
             temperature=0.1,
             keep_alive="5m",
@@ -2432,7 +2530,6 @@ def manager_node(state: RickState) -> dict:
         logger.error("[manager] fallback plan attivato")
         parsed = _fallback_plan(user_input)
 
-    # Filtra skills non registrate
     valid_skills = [s for s in parsed.get("skills_needed", []) if s in EXPERTS]
     if len(valid_skills) != len(parsed.get("skills_needed", [])):
         unknown = set(parsed.get("skills_needed", [])) - set(valid_skills)
@@ -4171,12 +4268,13 @@ def extract_commands(text: str) -> list[dict]:
         commands.append({"type": "python", "code": m.group(1).strip()})
         
     # Fallback Markdown (se non ci sono tag XML)
-    if not commands:
-        for m in re.finditer(r"```python\s+(.*?)```", text, re.DOTALL):
-            commands.append({"type": "python", "code": m.group(1).strip()})
-        for m in re.finditer(r"```bash\s+(.*?)```", text, re.DOTALL):
-            commands.append({"type": "bash", "code": m.group(1).strip()})
-            
+    # RIMOSSO per sicurezza: eseguire solo tag XML espliciti
+    # if not commands:
+    #     for m in re.finditer(r"```python\s+(.*?)```", text, re.DOTALL):
+    #         commands.append({"type": "python", "code": m.group(1).strip()})
+    #     for m in re.finditer(r"```bash\s+(.*?)```", text, re.DOTALL):
+    #         commands.append({"type": "bash", "code": m.group(1).strip()})
+    
     return commands
 
 def run_code_from_response(text: str, session_id: str = "cli_run") -> list[dict]:
