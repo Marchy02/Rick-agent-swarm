@@ -20,9 +20,14 @@ from rick.config import MAX_AUDIT_RETRIES, MAX_EXEC_RETRIES, MAX_VALIDATOR_RETRI
 
 
 def after_manager(state: RickState):
+    from rick.config import PERSONA_IRONY
     skills = state.get("skills_needed", [])
     if skills and skills != ["none"]:
         return "expert_dispatcher"
+    
+    if PERSONA_IRONY == 1:
+        logger.info("[graph] PERSONA_IRONY=1 → bypass persona (risposta diretta)")
+        return "memory_optimizer"
     return "persona"
 
 
@@ -57,16 +62,22 @@ def after_validator(state: RickState):
 
 
 def after_audit(state: RickState):
+    from rick.config import PERSONA_IRONY
     verdict = state.get("audit_verdict", "pass")
     audit_passes = state.get("audit_passes", 0)
     
     if audit_passes >= MAX_AUDIT_RETRIES or verdict == "pass":
+        if PERSONA_IRONY == 1:
+            logger.info("[graph] PERSONA_IRONY=1 → bypass persona")
+            return "memory_optimizer"
         return "persona"
     
     if verdict in ["fail", "retry"]:
         logger.info(f"[graph] Audit {verdict} → torno al manager per correzione")
         return "manager"
     
+    if PERSONA_IRONY == 1:
+        return "memory_optimizer"
     return "persona"
 
 

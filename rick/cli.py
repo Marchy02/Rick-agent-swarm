@@ -2,13 +2,18 @@
 CLI entry point — `python -m rick.cli "la tua richiesta"`
 
 Features:
-  - Esegue la pipeline completa (manager → coder → auditor → persona)
+  - Esegue la pipeline completa (manager → expert → validator → auditor → persona)
   - Stampa la risposta finale su stdout
   - Scrive il trace JSONL in data/traces/<session_id>.jsonl
   - Flag --sandbox: esegue i blocchi Python nella sandbox dopo la risposta
   - Flag --no-persona: bypass Rick (persona_intensity=0)
   - Flag --trace: stampa il trace completo a fine run
 """
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
+os.environ["CHROMA_SERVER_NOFILE"] = "524288"
+
 import argparse
 import json
 import logging
@@ -46,8 +51,8 @@ def main() -> None:
         help="Stampa il trace completo su stderr a fine run",
     )
     parser.add_argument(
-        "--intensity", type=int, choices=[0, 1, 2], default=None,
-        help="Intensità persona Rick (0=off, 1=lieve, 2=full)",
+        "--intensity", type=int, choices=[1, 2, 3, 4, 5], default=None,
+        help="Livello ironia/personalità Rick (1=off, 3=classic, 5=toxic)",
     )
     parser.add_argument(
         "--ingest", type=str, metavar="DIR",
@@ -67,15 +72,17 @@ def main() -> None:
 
     if args.wipe_memory:
         import shutil
+        import sqlite3
         from rick.config import BASE_DIR
-        from rick.memory import wipe_facts
         chroma_path = BASE_DIR / "data" / "chroma_db"
+        facts_db = BASE_DIR / "data" / "facts.sqlite"
         wiped = []
         if chroma_path.exists():
             shutil.rmtree(chroma_path)
-            wiped.append("appunti (chroma)")
-        wipe_facts()
-        wiped.append("fatti (sqlite)")
+            wiped.append("memoria vettoriale (chroma)")
+        if facts_db.exists():
+            facts_db.unlink()
+            wiped.append("fatti (sqlite)")
         print(f"Memoria cancellata: {', '.join(wiped)}.")
         sys.exit(0)
 
@@ -93,14 +100,13 @@ def main() -> None:
         sys.exit(1)
 
     # ── Overrides runtime ─────────────────────────────────────────────────────
+    import rick.config as cfg
     if args.no_persona:
-        import rick.config as cfg
-        cfg.PERSONA_INTENSITY = 0
+        cfg.PERSONA_IRONY = 1
     if args.intensity is not None:
-        import rick.config as cfg
-        cfg.PERSONA_INTENSITY = args.intensity
+        cfg.PERSONA_IRONY = args.intensity
 
-    # ── Import del grafo (qui perché config può essere modificata sopra) ──────
+    # ── Import del grafo ──────────────────────────────────────────────────────
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
     from rick.graph import build_graph
@@ -114,35 +120,31 @@ def main() -> None:
     # ── Stato iniziale ────────────────────────────────────────────────────────
     session_id = str(uuid.uuid4())[:8]
     initial_state = {
-        "user_input":      user_input,
-        "session_id":      session_id,
-        "intent":          "",
-        "skills_needed":   [],
-        "plan":            [],
-        "current_step":    0,
-        "expert_outputs":  [],
-        "final_draft":     "",
-        "audit_verdict":   "",
-        "audit_notes":     None,
-        "audit_passes":    0,
-        "executor_passes": 0,
+        "user_input":        user_input,
+        "session_id":        session_id,
+        "intent":            "",
+        "skills_needed":     [],
+        "plan":              [],
+        "current_step":      0,
+        "expert_outputs":    [],
+        "final_draft":       "",
+        "audit_verdict":     "",
+        "audit_notes":       None,
+        "audit_passes":      0,
+        "executor_passes":   0,
         "validator_retries": 0,
-        "final_response":  "",
-        "trace":           [],
+        "final_response":    "",
+        "trace":             [],
     }
 
     # ── Esecuzione pipeline ───────────────────────────────────────────────────
     logger.info(f"=== Rick v8 | session {session_id} ===")
     t_start = time.time()
 
-    from sandbox import RickSandbox
-    # ── Esecuzione del grafo con streaming ────────────────────────────────────
-    final_state = initial_state
+    final_state = initial_state.copy()
     try:
-        # Usiamo stream per vedere i nodi in tempo reale
         cfg_run = {"configurable": {"thread_id": session_id}, "recursion_limit": 50}
         for event in graph.stream(initial_state, config=cfg_run):
-            # In LangGraph stream default, event è un dizionario {node_name: {updates}}
             if not isinstance(event, dict):
                 continue
                 
@@ -150,83 +152,90 @@ def main() -> None:
                 if not isinstance(state_update, dict):
                     continue
                 
-                # Feedback visivo pulito
+                # Feedback visivo su stderr
                 if node_name == "persona":
                     if state_update.get("final_response"):
-                        print(" Rick ha finito di elaborare la risposta.")
+                        logger.info("✅ Rick ha risposto.")
                     else:
-                        print(" Rick sta iniziando a parlare...")
+                        logger.info("🎤 Rick sta pensando...")
                 elif node_name == "manager":
-                    print(" Rick sta analizzando la tua richiesta...")
+                    logger.info("🧠 Manager: analisi della richiesta...")
                 elif node_name == "expert_dispatcher":
-                    print("Chiamata agli esperti in corso...")
+                    logger.info("🔧 Expert Dispatcher: coordinamento esperti...")
                 elif node_name == "auditor":
-                    print("Verifica della risposta (Audit)...")
-                
-                # Aggiorniamo lo stato finale — Gestione manuale dell'accumulo per liste Annotated
+                    logger.info("🔍 Auditor: verifica della risposta...")
+                elif node_name == "executor":
+                    logger.info("⚙️  Executor: esecuzione comandi sandbox...")
+                elif node_name == "output_validator":
+                    logger.info("🛡️  Validator: controllo allucinazioni...")
+                elif node_name == "memory_optimizer":
+                    logger.info("🧠 Memory Optimizer: salvataggio fatti...")
+
+                # Aggiorna final_state in modo sicuro
                 for key, val in state_update.items():
-                    if key in ["trace", "expert_outputs"] and key in final_state:
-                        final_state[key].extend(val)
+                    if key in ["trace", "expert_outputs"]:
+                        if key in final_state and isinstance(final_state[key], list) and isinstance(val, list):
+                            final_state[key].extend(val)
+                        else:
+                            final_state[key] = val
                     else:
                         final_state[key] = val
-                
+
     except Exception as e:
         logger.error(f"Errore durante l'esecuzione del grafo: {e}")
+        sys.exit(1)
     finally:
-        # Pulisce la sandbox a fine sessione
-        RickSandbox(session_id).cleanup()
+        # Pulizia sandbox finale per sicurezza
+        try:
+            from sandbox import RickSandbox
+            RickSandbox(session_id).cleanup()
+        except Exception:
+            pass
 
     elapsed = round(time.time() - t_start, 1)
     logger.info(f"=== done in {elapsed}s ===")
 
     # ── Output finale ─────────────────────────────────────────────────────────
-    # Recuperiamo il piano e gli output per il debug visivo
     intent = final_state.get("intent")
     skills = final_state.get("skills_needed", [])
     plan = final_state.get("plan", [])
     verdict = final_state.get("audit_verdict")
     
+    # Riassunto tecnico su stderr (opzionale, lo mettiamo su stderr per non sporcare stdout)
     if intent:
-        print(f"\n[INTENTO] {intent}")
-    
-    if skills and skills != ["none"]:
-        print(f" [PIANO] {', '.join(skills)}")
-        for step in plan:
-            print(f"  └─ Passo {step.get('step')}: {step.get('task')} ({step.get('skill')})")
-    
+        logger.info(f"[INTENTO] {intent}")
     if verdict:
-        color = "✅" if verdict == "pass" else "❌"
-        print(f"{color} [AUDIT] {verdict.upper()}")
+        logger.info(f"[AUDIT] {verdict.upper()}")
 
+    # LA RISPOSTA VERA va su stdout
     response = final_state.get("final_response") or final_state.get("final_draft", "")
     print("\n" + "═"*40)
     print(response)
     print("═"*40 + "\n")
 
-    # ── Sandbox ───────────────────────────────────────────────────────────────
+    # ── Sandbox Post-Risposta ──────────────────────────────────────────────────
     if args.sandbox:
-        from sandbox import run_code_from_response
-        results = run_code_from_response(response)
-        if not results:
-            logger.info("[sandbox] nessun blocco Python trovato")
-        else:
-            print("\n── Sandbox Output ──────────────────────────────────")
-            for r in results:
-                idx = r["block_index"]
-                if r["timed_out"]:
-                    print(f"[blocco {idx}] TIMEOUT")
-                elif r["returncode"] != 0:
-                    print(f"[blocco {idx}] ERRORE (rc={r['returncode']})")
-                    if r["stderr"]:
-                        print(r["stderr"])
-                else:
-                    print(f"[blocco {idx}] OK")
-                    if r["stdout"]:
-                        print(r["stdout"])
+        try:
+            from sandbox import run_code_from_response
+            results = run_code_from_response(response, session_id=session_id)
+            if not results:
+                logger.info("[sandbox] nessun blocco Python trovato")
+            else:
+                print("\n── Sandbox Output ──────────────────────────────────")
+                for r in results:
+                    idx = r["block_index"]
+                    if r.get("returncode") != 0:
+                        print(f"[blocco {idx}] ERRORE (rc={r.get('returncode')})")
+                        if r.get("stderr"): print(r["stderr"])
+                    else:
+                        print(f"[blocco {idx}] OK")
+                        if r.get("stdout"): print(r["stdout"])
+        except Exception as e:
+            logger.error(f"[sandbox] Errore: {e}")
 
     # ── Scrivi trace JSONL ────────────────────────────────────────────────────
     trace_path = DATA_DIR / f"{session_id}.jsonl"
-    trace      = final_state.get("trace", [])
+    trace = final_state.get("trace", [])
     with open(trace_path, "w", encoding="utf-8") as f:
         for entry in trace:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

@@ -1,9 +1,5 @@
 """
-Nodo OUTPUT VALIDATOR v11.1 — Cane da guardia anti-allucinazione numerica.
-- Filtra i numeri in contesti negativi (smentite).
-- Confronta l'output dell'executor con la risposta dell'esperto.
-- Salva fatti verificati (software, porte, versioni) in ChromaDB e SQLite.
-- Gestisce i retry tramite MAX_VALIDATOR_RETRIES dal config.
+Nodo OUTPUT VALIDATOR v11.1 — Anti-allucinazione numerica + fix metadata None.
 """
 import re
 import logging
@@ -13,7 +9,6 @@ from rick.config import MAX_VALIDATOR_RETRIES
 
 logger = logging.getLogger(__name__)
 
-# Riconosce l'inizio di un blocco RISULTATO dell'executor
 EXECUTOR_MARKER = re.compile(r"──\s+RISULTATO\s+(BASH|PYTHON)\s+\(giro\s+\d+\)\s+──")
 
 
@@ -27,23 +22,20 @@ def _extract_version_numbers(text: str) -> set[str]:
 def _filter_negative_context(text: str, numbers: set[str]) -> set[str]:
     """
     Rimuove i numeri che appaiono in un contesto negativo ("non la 3.8.12"),
-    perché non sono affermazioni, ma smentite o confronti.
+    perché non sono affermazioni, ma smentite.
     """
     cleaned = set()
     for num in numbers:
         idx = text.find(num)
         if idx != -1:
-            # Analizziamo una finestra di 30 caratteri prima e dopo il numero
             context = text[max(0, idx-30):idx+len(num)+30]
-            if re.search(r'\b(non|invece|evita|errore|sbagliat|obsoleto|vecchi|precedente)\b', context, re.IGNORECASE):
-                logger.info(f"[validator] Ignoro numero in contesto negativo: {num}")
+            if re.search(r'\b(non|invece|evita|errore|sbagliat|obsoleto|vecchi)\b', context, re.IGNORECASE):
                 continue
         cleaned.add(num)
     return cleaned
 
 
 def _find_last_executor_block(outputs: list[str]) -> tuple[int, str] | None:
-    """Cerca l'ultimo blocco dell'executor nella lista degli output."""
     for i in range(len(outputs) - 1, -1, -1):
         if EXECUTOR_MARKER.search(outputs[i]):
             return i, outputs[i]
@@ -51,15 +43,13 @@ def _find_last_executor_block(outputs: list[str]) -> tuple[int, str] | None:
 
 
 def _find_expert_response_after(outputs: list[str], start_idx: int) -> str | None:
-    """Restituisce il primo output non-executor successivo all'indice dato."""
     for i in range(start_idx + 1, len(outputs)):
         if not EXECUTOR_MARKER.search(outputs[i]) and outputs[i].strip():
             return outputs[i]
     return None
 
 
-def _extract_command(executor_output: str) -> str | None:
-    """Estrae il comando eseguito dai tag XML o da pattern comuni."""
+def _extract_command(executor_output: str) -> str:
     bash_match = re.search(r"<bash>(.*?)</bash>", executor_output, re.DOTALL)
     if bash_match:
         return bash_match.group(1).strip()
@@ -69,12 +59,11 @@ def _extract_command(executor_output: str) -> str | None:
     for line in executor_output.splitlines():
         if any(p in line.lower() for p in ['curl ', 'wget ', 'import requests']):
             return line.strip()
-    return None
+    return "unknown"
 
 
 def _save_verified_facts(executor_output: str, user_input: str):
-    """Salva i fatti estratti dall'output dell'executor."""
-    command = _extract_command(executor_output) or "unknown"
+    command = _extract_command(executor_output)
     versions = _extract_version_numbers(executor_output)
 
     for ver in versions:
@@ -87,16 +76,16 @@ def _save_verified_facts(executor_output: str, user_input: str):
         else:
             fact = f"Versione rilevata: {ver}" if "." in ver else f"Risultato: {ver}"
 
-        # Filtra eventuali None nei metadata
+        # Filtra None nei metadata per evitare errori nel DB
         metadata = {
-            "command": command[:200],
+            "command": command[:200] if command else "unknown",
             "user_query": user_input[:200] if user_input else "unknown"
         }
         metadata = {k: v for k, v in metadata.items() if v is not None}
 
         try:
             save_verified_fact(content=fact, source_type="executor_output", metadata=metadata)
-            logger.info(f"[validator] ✅ Salvato fatto verificato: {fact}")
+            logger.info(f"[validator] ✅ Salvato: {fact}")
         except Exception as e:
             logger.error(f"[validator] Errore salvataggio {fact}: {e}")
 
@@ -115,48 +104,36 @@ def output_validator_node(state: RickState) -> dict:
     if not expert_resp:
         return {"audit_verdict": "pass", "validator_retries": 0}
 
-    # 1. Salvataggio fatti (solo se exit code 0)
+    # Salva fatti solo se il comando è riuscito
     if "Exit code: 0" in exec_content:
-        try:
-            _save_verified_facts(exec_content, user_input)
-        except Exception as e:
-            logger.error(f"[validator] Errore estrazione fatti: {e}")
+        _save_verified_facts(exec_content, user_input)
 
-    # 2. Validazione anti-allucinazione
+    # Se l'executor è fallito, non possiamo validare con certezza
     if "Exit code: 0" not in exec_content:
         logger.info("[validator] Executor fallito, salto validazione")
         return {"audit_verdict": "pass"}
 
     exec_versions = _extract_version_numbers(exec_content)
     resp_versions_raw = _extract_version_numbers(expert_resp)
-    
-    # NOVITÀ v11.1: Filtro contesti negativi
     resp_versions = _filter_negative_context(expert_resp, resp_versions_raw)
 
     hallucinated = resp_versions - exec_versions
 
     if hallucinated:
         if retries >= MAX_VALIDATOR_RETRIES:
-            logger.warning(f"[validator] Max retry raggiunti ({MAX_VALIDATOR_RETRIES}) – passo all'auditor")
-            return {
-                "audit_verdict": "pass",
-                "validator_retries": retries + 1,
-            }
+            logger.warning(f"[validator] Max retry raggiunti → passo all'auditor")
+            return {"audit_verdict": "pass", "validator_retries": retries + 1}
 
-        logger.warning(f"[validator] 🚨 Allucinazione numerica: {hallucinated}")
+        logger.warning(f"[validator] 🚨 Allucinazione: {hallucinated}")
         return {
             "audit_verdict": "retry",
             "audit_notes": (
                 f"🚨 ALLUCINAZIONE RILEVATA:\n"
-                f"Hai citato i seguenti dati che NON compaiono nei risultati reali: "
-                f"{', '.join(sorted(hallucinated))}.\n\n"
-                "Usa SOLO i dati reali del blocco '── RISULTATO'."
+                f"Hai citato dati non presenti nell'output dell'executor: {', '.join(sorted(hallucinated))}. "
+                "Rileggi il blocco '── RISULTATO' e usa solo i dati reali."
             ),
             "validator_retries": retries + 1,
         }
 
-    logger.info("[validator] ✅ Output dell'esperto coerente con l'executor")
-    return {
-        "audit_verdict": "pass",
-        "validator_retries": 0,
-    }
+    logger.info("[validator] ✅ Output coerente con l'executor")
+    return {"audit_verdict": "pass", "validator_retries": 0}

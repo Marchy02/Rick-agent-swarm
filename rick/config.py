@@ -63,8 +63,17 @@ EXPERTS: dict[str, dict] = {
     },
 }
 
-# ── Persona ───────────────────────────────────────────────────────────────────
-PERSONA_INTENSITY = 1 # ← FIXED: era 1 (troppo sobrio)
+# ── Persona (Rick C-137) ──────────────────────────────────────────────────────
+# PERSONA_IRONY: Il selettore di personalità e cinismo.
+#   1 = OFF: Rick è spento. Ricevi solo la risposta tecnica (Bypass totale).
+#   2 = Spoglio: Minimalista, quasi robotico, un *burp* ogni tanto.
+#   3 = Rick Classico: Sarcasmo e cinismo standard della serie (Default).
+#   4 = Con Ricordi: Rick usa la memoria per fare riferimenti personali.
+#   5 = Distruttivo: Si attiva da solo se sbagli. Rick ti umilia senza pietà.
+PERSONA_IRONY = 3 
+
+CODE_PLACEHOLDER_PREFIX = "██RICK_CODE_"
+CODE_PLACEHOLDER_SUFFIX = "██"
 
 # ── Auditor ──────────────────────────────────────────────────────────────────
 MAX_AUDIT_RETRIES = 2   # dopo N retry, forza pass

@@ -27,7 +27,9 @@ def executor_node(state: RickState) -> dict:
     sandbox          = RickSandbox(session_id)
     execution_results = []
 
-    for cmd_type, cmd_content in commands:
+    for cmd in commands:
+        cmd_type = cmd["type"]
+        cmd_content = cmd["code"]
         logger.info(f"[executor] esecuzione {cmd_type}: {cmd_content[:60]}...")
 
         res = sandbox.execute_bash(cmd_content) if cmd_type == "bash" \

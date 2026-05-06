@@ -1,179 +1,128 @@
 """
-Nodo PERSONA (filtro Rick) — Versione ottimizzata v10 (DeepSeek Refactor)
-Responsabilità: riscrivere final_draft in voce Rick Sanchez.
+Nodo PERSONA — Applica lo stile Rick Sanchez (C-137) alla risposta finale.
+Protegge i blocchi di codice tramite placeholder per evitarne la corruzione.
+Include gestione del draft vuoto (risposta conversazionale diretta o da memoria).
 """
-import logging
 import re
-import time
+import logging
 from rick.state import RickState
-from rick.config import MODEL_PERSONA, PROMPTS_DIR, PERSONA_INTENSITY
 from rick.llm.client import llm_generate
+from rick.config import PROMPTS_DIR, CODE_PLACEHOLDER_PREFIX, CODE_PLACEHOLDER_SUFFIX, MODEL_PERSONA, PERSONA_IRONY
 
 logger = logging.getLogger(__name__)
 
-# ── Caricamento template ────────────────────────────────────────────────────
-_SYSTEM_TEMPLATE = (PROMPTS_DIR / "persona_rick.md").read_text(encoding="utf-8")
-
-# ── Regex per blocchi da proteggere ─────────────────────────────────────────
-_CODE_FENCE_RE = re.compile(
-    r"(```[^\n]*\n[\s\S]*?```|──\s+RISULTATO\s+[\s\S]*?──+\s*\n)",
-    re.MULTILINE
-)
-
-# Placeholder univoci che NON possono apparire nel testo normale
-_PLACEHOLDER_PREFIX = "<<<RICK_CODEBLOCK_"
-_PLACEHOLDER_SUFFIX = ">>>"
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 
 
 def _extract_code_blocks(text: str) -> tuple[str, list[str]]:
-    """Sostituisce i code block con placeholder univoci."""
+    """Estrae i blocchi di codice e li sostituisce con placeholder."""
     blocks = _CODE_FENCE_RE.findall(text)
     sanitized = text
     for i, block in enumerate(blocks):
-        placeholder = f"{_PLACEHOLDER_PREFIX}{i}{_PLACEHOLDER_SUFFIX}"
+        placeholder = f"{CODE_PLACEHOLDER_PREFIX}{i}{CODE_PLACEHOLDER_SUFFIX}"
         sanitized = sanitized.replace(block, placeholder, 1)
     return sanitized, blocks
 
 
 def _restore_code_blocks(text: str, blocks: list[str]) -> str:
-    """Reinserisce i code block originali al posto dei placeholder."""
+    """Ripristina i blocchi di codice originali al posto dei placeholder."""
     for i, block in enumerate(blocks):
-        placeholder = f"{_PLACEHOLDER_PREFIX}{i}{_PLACEHOLDER_SUFFIX}"
+        placeholder = f"{CODE_PLACEHOLDER_PREFIX}{i}{CODE_PLACEHOLDER_SUFFIX}"
         text = text.replace(placeholder, block, 1)
     
-    # Controllo di integrità
-    remaining = re.findall(re.escape(_PLACEHOLDER_PREFIX) + r"\d+" + re.escape(_PLACEHOLDER_SUFFIX), text)
-    if remaining:
-        logger.warning(f"[persona] {len(remaining)} placeholder rimasti dopo restore! Possibile corruzione codice.")
-    
+    # Fallback: se il placeholder esatto è stato alterato dal modello, prova con una regex
+    remaining = re.findall(
+        re.escape(CODE_PLACEHOLDER_PREFIX) + r"\d+" + re.escape(CODE_PLACEHOLDER_SUFFIX), text
+    )
+    for match in remaining:
+        try:
+            idx = int(match[len(CODE_PLACEHOLDER_PREFIX):-len(CODE_PLACEHOLDER_SUFFIX)])
+            if idx < len(blocks):
+                text = text.replace(match, blocks[idx], 1)
+        except Exception:
+            pass
     return text
 
 
-def _build_persona_system(intensity: int) -> str:
-    """Costruisce il system prompt in base all'intensità."""
-    base = _SYSTEM_TEMPLATE
-    
-    if intensity == 1:
-        return base + "\n\nIntensità BASSA: max 1 menzione di Marco, niente burp. Sii sobrio ma riconoscibile."
-    elif intensity >= 2:
-        return base + "\n\nIntensità ALTA: burp e menzione Marco OBBLIGATORI almeno 1 volta. Puoi esagerare un po'."
-    return base
-
-
-def _build_user_prompt(
-    user_input: str,
-    draft: str,
-    memories: str | None = None,
-    audit_report: str | None = None,
-) -> str:
-    """Costruisce il prompt utente da passare a Rick."""
-    lines = []
-    
-    if draft.strip():
-        lines.append("**BOZZA TECNICA DA RICKIZZARE:**")
-        lines.append(draft)
-    else:
-        lines.append(f"**RICHIESTA UTENTE:** {user_input}")
-    
-    extra_parts = []
-    if memories:
-        extra_parts.append(f"**Memoria utente:**\n{memories}")
-    if audit_report:
-        extra_parts.append(f"**Audit report:** {audit_report}")
-    
-    if extra_parts:
-        lines.append("\n**CONTESTO AGGIUNTIVO:**")
-        lines.extend(extra_parts)
-    
-    return "\n\n".join(lines)
-
-
 def persona_node(state: RickState) -> dict:
-    t0 = time.time()
-    final_draft = state.get("final_draft", "")
-    intensity = PERSONA_INTENSITY
-
-    # ── Bypass totale ──────────────────────────────────────────────────────
-    if intensity == 0:
-        logger.info("[persona] bypass totale (intensity=0)")
-        return {
-            "final_response": final_draft,
-            "trace": [{
-                "node": "persona",
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "duration_ms": 0,
-                "model": "none (bypass)",
-                "input_keys": ["final_draft"],
-                "output_keys": ["final_response"],
-            }],
-        }
-
-    # ── Preparazione contesto ──────────────────────────────────────────────
+    """Trasforma la bozza tecnica in una risposta stile Rick C-137."""
+    draft = state.get("final_draft", "")
     user_input = state.get("user_input", "")
     
-    # Lazy loading memoria
-    from rick.memory import get_recent_memories
-    memories = get_recent_memories(user_input) or "Nessun ricordo rilevante."
-    
-    audit_report = state.get("audit_report", "")
+    # ── CASO 1: nessuna bozza tecnica (conversazione diretta o errore) ─────
+    if not draft.strip():
+        from rick.memory import get_recent_memories
+        mem = get_recent_memories(user_input)
+        if mem:
+            # Prova a estrarre un fatto rilevante dalla memoria
+            first_line = mem.splitlines()[0]
+            if first_line.startswith("[VERIFICATO"):
+                fact = first_line.split("]:", 1)[-1].strip()
+                draft = fact
+            elif first_line.startswith("Versione"):
+                draft = first_line
+            else:
+                draft = f"Rispondi direttamente a questa richiesta: {user_input}"
+        else:
+            draft = f"Rispondi direttamente a questa richiesta: {user_input}"
 
-    # Draft da usare
-    if not final_draft.strip():
-        logger.info("[persona] Nessun draft, risposta conversazionale diretta")
-        draft_to_use = f"[L'utente ha detto: '{user_input}'. Rispondi direttamente a questa richiesta.]"
-    else:
-        draft_to_use = final_draft
+    # 1. Protezione codice (se ci sono blocchi)
+    sanitized_draft, code_blocks = _extract_code_blocks(draft)
 
-    # ── Protezione codice ──────────────────────────────────────────────────
-    sanitized, code_blocks = _extract_code_blocks(draft_to_use)
-    if code_blocks:
-        logger.info(f"[persona] Protetti {len(code_blocks)} blocchi codice/risultato")
+    # 2. Carica il system prompt di Rick
+    system_path = PROMPTS_DIR / "persona_rick.md"
+    system_prompt = system_path.read_text(encoding="utf-8") if system_path.exists() else "Sei Rick Sanchez."
+
+    # 3. Costruisci il prompt utente
+    from rick.irony import get_irony_level, get_irony_instructions
+    effective_level = get_irony_level(PERSONA_IRONY, state)
+    irony = get_irony_instructions(effective_level)
     
-    # ── Prompt e sistema separati ──────────────────────────────────────────
-    system = _build_persona_system(intensity)
-    user_prompt = _build_user_prompt(
-        user_input=user_input,
-        draft=sanitized,
-        memories=memories,
-        audit_report=audit_report,
+    prompt = (
+        f"{irony}\n\n"
+        f"USER_INPUT: {user_input}\n\n"
+        f"BOZZA TECNICA:\n{sanitized_draft}\n"
     )
-    
-    # Temperatura in base all'intensità
-    temp = 0.5 if intensity == 1 else 0.8
 
-    logger.info(f"[persona] Chiamata LLM (intensity={intensity}, temp={temp})")
-    
-    raw = llm_generate(
+    # Memorie recenti (per i livelli alti)
+    if effective_level >= 4:
+        from rick.memory import get_recent_memories
+        memories = get_recent_memories(user_input)
+        if memories:
+            prompt += f"\nMEMORIE RECENTI (usale per infierire se il livello è 5):\n{memories}\n"
+
+    prompt += "MANTIENI I PLACEHOLDER ██RICK_CODE_N██ INTATTI."
+
+    # ═══ AGGIUNTA IMPORTANTE ═══
+    # Se la bozza contiene già una risposta definitiva (es. dalla cache),
+    # impedisci a Rick di aggiungere comandi inutili
+    if "versione installata" in draft.lower() or "già in memoria" in draft.lower():
+        prompt += (
+            "IMPORTANTE: La bozza sopra è una RISPOSTA DEFINITIVA già verificata.\n"
+            "Non aggiungere comandi da eseguire. Non dire 'prova con questo comando'.\n"
+            "Limitati a comunicare il dato con il tuo stile cinico.\n"
+        )
+    else:
+        prompt += (
+            "REGOLE: Sostituisci la bozza con la tua voce cinica. "
+            "MANTIENI I PLACEHOLDER ██RICK_CODE_N██ ESATTAMENTE DOVE SONO. "
+            "NON aggiungere codice non richiesto.\n"
+        )
+
+    # 4. Generazione
+    rick_response = llm_generate(
         provider="ollama",
         model=MODEL_PERSONA,
-        prompt=user_prompt,
-        system=system,
-        temperature=temp,
-        keep_alive="0",
+        prompt=prompt,
+        system=system_prompt,
+        temperature=0.8,
     )
 
-    # ── Ripristino codice ──────────────────────────────────────────────────
-    final_response = _restore_code_blocks(raw, code_blocks)
+    # 5. Ripristino codice
+    final_output = _restore_code_blocks(rick_response, code_blocks)
 
-    elapsed_ms = round((time.time() - t0) * 1000)
-    
-    logger.info(f"[persona] Risposta generata: {len(final_response)} chars ({elapsed_ms}ms)")
-    if code_blocks:
-        n_restored = len(_CODE_FENCE_RE.findall(final_response))
-        if n_restored != len(code_blocks):
-            logger.error(
-                f"[persona] DISCREPANZA BLOCCHI: "
-                f"attesi {len(code_blocks)}, trovati {n_restored} dopo restore!"
-            )
+    # 6. Pulizia finale: rimuovi eventuali doppi backtick vuoti
+    final_output = re.sub(r'```\s*```', '', final_output)
 
-    return {
-        "final_response": final_response,
-        "trace": [{
-            "node": "persona",
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "duration_ms": elapsed_ms,
-            "model": MODEL_PERSONA,
-            "input_keys": ["final_draft"],
-            "output_keys": ["final_response"],
-        }],
-    }
+    logger.info("[persona] Risposta 'Rickizzata' con successo.")
+    return {"final_response": final_output}

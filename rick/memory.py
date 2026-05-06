@@ -11,10 +11,17 @@ Query priority: verified_facts → knowledge → memories
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY"] = "False"
+os.environ["CHROMA_SERVER_NOFILE"] = "524288"
+
 
 import chromadb
-import requests
+
 import logging
+logging.getLogger("chromadb").propagate = False
+logging.getLogger("chromadb").setLevel(logging.CRITICAL)
+
+
+import requests
 import hashlib
 import time
 import sqlite3
@@ -97,6 +104,13 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
     return chunks
 
 
+def _clean_metadata(metadata: dict | None) -> dict:
+    """Rimuove i valori None dai metadata (ChromaDB non li accetta)."""
+    if not metadata:
+        return {}
+    return {k: v for k, v in metadata.items() if v is not None}
+
+
 def save_verified_fact(
     content: str,
     source_type: Literal["executor_output", "document"] = "executor_output",
@@ -120,21 +134,25 @@ def save_verified_fact(
             "verified_by": "output_validator",
             "confidence": 1.0,
             "ts": int(time.time()),
-            "expires_at": None,
+            "expires_at": "",  # Stringa vuota per coerenza schema
         }
         if metadata:
             meta.update(metadata)
         
+        # Pulizia finale metadata (rimuove i None residui)
+        meta = _clean_metadata(meta)
+        
         existing = _verified_coll.get(ids=[fact_id])
         if existing and existing['ids']:
             logger.info(f"[memory] Fatto verificato già presente: {content[:50]}...")
-        else:
-            _verified_coll.add(
-                documents=[content],
-                metadatas=[meta],
-                ids=[fact_id]
-            )
-            logger.info(f"[memory] ✅ Verified fact saved: {content[:60]}...")
+            return
+        
+        _verified_coll.add(
+            documents=[content],
+            metadatas=[meta],
+            ids=[fact_id]
+        )
+        logger.info(f"[memory] ✅ Verified fact saved: {content[:60]}...")
     except Exception as e:
         logger.error(f"[memory] Save verified fact error: {e}")
     
@@ -176,12 +194,13 @@ def save_memory(user_input: str, extracted_facts: str, confidence: float = 0.7):
         
         _mem_coll.add(
             documents=[extracted_facts],
-            metadatas=[{
+            metadatas=[_clean_metadata({
                 "user_input": user_input, 
                 "source_type": "chat", 
                 "confidence": confidence,
-                "ts": int(time.time())
-            }],
+                "ts": int(time.time()),
+                "expires_at": "",
+            })],
             ids=[mem_id]
         )
         logger.info(f"[memory] Saved: {extracted_facts[:60]}...")
@@ -279,12 +298,12 @@ def add_knowledge(
             
             _knw_coll.add(
                 documents=[chunk],
-                metadatas=[{
+                metadatas=[_clean_metadata({
                     "source": source_name,
                     "chunk": i,
                     "version": version or "unknown",
                     "ingested_at": ts,
-                }],
+                })],
                 ids=[doc_id]
             )
             added += 1

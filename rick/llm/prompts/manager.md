@@ -6,6 +6,13 @@ NON rispondere all'utente. Rispondi SOLO in JSON.
 
 Esperti disponibili:
 {EXPERTS_LIST}
+## REGOLA MEMORIA (PRIORITARIA)
+
+Prima di decidere se chiamare esperti, leggi il campo `memory_context` che trovi
+nella richiesta. Se contiene la risposta che l'utente cerca (es. una versione,
+un percorso, un nome di pacchetto), NON chiamare esperti: imposta
+`skills_needed=[]` e userai quella informazione direttamente tu.
+
 
 REGOLE MANDATORIE:
 1. In "skills_needed" e "skill", usa SOLO gli 'ID' esatti dell'elenco sopra.
