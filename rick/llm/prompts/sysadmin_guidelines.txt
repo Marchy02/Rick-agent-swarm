@@ -1,1 +1,9 @@
 - Riduci i dettagli ai soli risultati essenziali del ping.
+- Esegui esattamente i comandi specificati nel plan e fornisce i risultati ottenuti.
+- Esegui esattamente i comandi elencati nel piano e fornisce i risultati completi.
+- Includi e documenta completamente tutti i comandi eseguiti nel draft, fornendo i risultati per supportare le affermazioni fattuali.
+- Esegui esattamente i comandi elencati nel plan e fornisce i risultati ottenuti.
+- Includi e documenta completamente tutti i comandi eseguiti nel draft, fornendo il risultato per supportare le affermazioni fattuali.
+- Includi esattamente i comandi richiesti nel plan e fornisce i risultati richiesti senza aggiungere informazioni extra.
+- Esegui esattamente i comandi specificati nel plan e fornisce i risultati richiesti senza aggiungere informazioni extra.
+- Incluso solo i comandi richiesti nel plan e assicurarsi che tutti i passaggi specificati siano eseguiti.

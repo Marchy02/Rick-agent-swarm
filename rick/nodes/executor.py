@@ -60,7 +60,7 @@ def executor_node(state: RickState) -> dict:
 
     # ── Gestione INGEST (Memoria) ─────────────────────────────────────────────
     # Cerca tag <ingest>path/to/file</ingest>
-    ingest_tags = re.findall(r"<ingest>(.*?)</ingest>", expert_response)
+    ingest_tags = re.findall(r"<ingest>(.*?)</ingest>", last_output)
     for file_path in ingest_tags:
         file_path = file_path.strip()
         try:

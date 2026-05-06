@@ -9,11 +9,18 @@ basta aggiungere una voce lì e il manager la vedrà automaticamente al prossimo
 import json
 import logging
 import time
+from pydantic import BaseModel, Field, ValidationError
 from rick.state import RickState
 from rick.config import MODEL_MANAGER, PROMPTS_DIR, EXPERTS
 from rick.llm.client import llm_generate
 
 logger = logging.getLogger(__name__)
+
+
+class ManagerOutput(BaseModel):
+    intent: str = ""
+    skills_needed: list[str] = Field(default_factory=list)
+    plan: list[dict] = Field(default_factory=list)
 
 
 def _build_experts_list() -> str:
@@ -48,8 +55,9 @@ def _parse_json(text: str) -> dict | None:
     elif "```" in clean:
         clean = clean.split("```")[1].split("```")[0].strip()
     try:
-        return json.loads(clean)
-    except json.JSONDecodeError:
+        raw = json.loads(clean)
+        return ManagerOutput.model_validate(raw).model_dump()
+    except (json.JSONDecodeError, ValidationError):
         return None
 
 

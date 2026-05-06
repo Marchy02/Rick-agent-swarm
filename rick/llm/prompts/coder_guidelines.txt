@@ -1,0 +1,6 @@
+# Linee guida per coder
+# Generate automaticamente da Agent-Lightning
+# NON ripetere questi errori:
+
+- Segui esattamente il plan specificato e fornisce sempre l'output completo dei comandi eseguiti.
+- Utilizza `rm -rf` solo dopo aver implementato controlli di sicurezza e assicurati che tutti i pacchetti necessari siano installati prima dell'esecuzione del script.

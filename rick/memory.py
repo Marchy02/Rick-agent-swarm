@@ -1,5 +1,12 @@
 """
 Memoria semantica con ChromaDB — lazy init, chunking, deduplica.
+
+3 COLLEZIONI:
+- verified_facts: fatti validati dall'output_validator (confidence 1.0)
+- memories: fatti estratti da conversazioni (confidence variabile)
+- knowledge: documenti ingesti (PDF, markdown, etc.)
+
+Query priority: verified_facts → knowledge → memories
 """
 import chromadb
 import requests
@@ -7,6 +14,7 @@ import logging
 import hashlib
 import time
 from pathlib import Path
+from typing import Literal
 from rick.config import BASE_DIR, OLLAMA_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -17,6 +25,7 @@ CHUNK_SIZE = 500  # token approx
 
 # Lazy init — solo al primo uso
 _client = None
+_verified_coll = None  # ← NUOVO
 _mem_coll = None
 _knw_coll = None
 
@@ -41,16 +50,26 @@ class OllamaEmbedder(chromadb.EmbeddingFunction):
 
 def _init():
     """Init ChromaDB solo al primo uso — non all'import."""
-    global _client, _mem_coll, _knw_coll
+    global _client, _verified_coll, _mem_coll, _knw_coll
     if _client is not None:
         return
     
     try:
         _client = chromadb.PersistentClient(path=str(DB_PATH))
         embedder = OllamaEmbedder()
-        _mem_coll = _client.get_or_create_collection(name="memories", embedding_function=embedder)
-        _knw_coll = _client.get_or_create_collection(name="knowledge", embedding_function=embedder)
-        logger.info("[memory] ChromaDB initialized")
+        _verified_coll = _client.get_or_create_collection(
+            name="verified_facts", 
+            embedding_function=embedder
+        )
+        _mem_coll = _client.get_or_create_collection(
+            name="memories", 
+            embedding_function=embedder
+        )
+        _knw_coll = _client.get_or_create_collection(
+            name="knowledge", 
+            embedding_function=embedder
+        )
+        logger.info("[memory] ChromaDB initialized (3 collections)")
     except Exception as e:
         logger.error(f"[memory] Init failed: {e}")
         raise
@@ -67,7 +86,58 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
     return chunks
 
 
-def save_memory(user_input: str, extracted_facts: str):
+def save_verified_fact(
+    content: str,
+    source_type: Literal["executor_output", "document"],
+    metadata: dict | None = None
+):
+    """
+    Salva un fatto VERIFICATO nella collezione verified_facts.
+    
+    Args:
+        content: Il fatto da salvare
+        source_type: "executor_output" o "document"
+        metadata: dict opzionale con campi aggiuntivi
+    """
+    _init()
+    
+    if not content or len(content.strip()) < 10:
+        return
+    
+    try:
+        fact_hash = hashlib.md5(content.encode()).hexdigest()[:12]
+        fact_id = f"verified_{fact_hash}"
+        
+        # Metadata standard
+        meta = {
+            "source_type": source_type,
+            "verified_by": "output_validator",
+            "confidence": 1.0,
+            "ts": int(time.time()),
+            "expires_at": None,
+        }
+        
+        # Merge con metadata custom
+        if metadata:
+            meta.update(metadata)
+        
+        # Deduplica
+        existing = _verified_coll.get(ids=[fact_id])
+        if existing and existing['ids']:
+            logger.info(f"[memory] Fatto verificato già presente: {content[:50]}...")
+            return
+        
+        _verified_coll.add(
+            documents=[content],
+            metadatas=[meta],
+            ids=[fact_id]
+        )
+        logger.info(f"[memory] ✅ Verified fact saved: {content[:60]}...")
+    except Exception as e:
+        logger.error(f"[memory] Save verified fact error: {e}")
+
+
+def save_memory(user_input: str, extracted_facts: str, confidence: float = 0.7):
     """Salva fatto nella memoria — usa hash per deduplica."""
     if not extracted_facts or "NIENTE" in extracted_facts.upper():
         return
@@ -86,7 +156,12 @@ def save_memory(user_input: str, extracted_facts: str):
         
         _mem_coll.add(
             documents=[extracted_facts],
-            metadatas=[{"user_input": user_input, "source": "chat", "ts": int(time.time())}],
+            metadatas=[{
+                "user_input": user_input, 
+                "source_type": "chat", 
+                "confidence": confidence,
+                "ts": int(time.time())
+            }],
             ids=[mem_id]
         )
         logger.info(f"[memory] Saved: {extracted_facts[:60]}...")
@@ -95,49 +170,122 @@ def save_memory(user_input: str, extracted_facts: str):
 
 
 def get_recent_memories(query: str, limit: int = 6) -> str:
-    """Ricerca semantica — bilanciata tra ricordi e knowledge."""
+    """
+    Ricerca semantica gerarchica:
+    1. verified_facts (priorità massima)
+    2. knowledge (documenti)
+    3. memories (chat)
+    
+    Ritorna i top-K risultati con prefix che indica la fonte.
+    """
     _init()
     try:
-        # Prendi metà da ogni collezione
-        n_per_coll = max(3, limit // 2)
+        # Query tutte le collezioni
+        results_verified = _verified_coll.query(query_texts=[query], n_results=limit)
+        results_knw = _knw_coll.query(query_texts=[query], n_results=limit)
+        results_mem = _mem_coll.query(query_texts=[query], n_results=limit)
         
-        results_mem = _mem_coll.query(query_texts=[query], n_results=n_per_coll)
-        results_knw = _knw_coll.query(query_texts=[query], n_results=n_per_coll)
-        
+        # Combina con priority (verified > knowledge > memories)
         combined = []
         
-        if results_mem and results_mem['documents'] and results_mem['documents'][0]:
-            for doc in results_mem['documents'][0]:
-                combined.append(f"[RICORDO]: {doc}")
-                
-        if results_knw and results_knw['documents'] and results_knw['documents'][0]:
-            for doc in results_knw['documents'][0]:
-                combined.append(f"[DOCS]: {doc}")
+        # 1. Verified facts (massima priorità)
+        if results_verified and results_verified['documents'] and results_verified['documents'][0]:
+            for doc, meta in zip(
+                results_verified['documents'][0],
+                results_verified['metadatas'][0]
+            ):
+                confidence = meta.get('confidence', 1.0)
+                combined.append({
+                    "text": f"[VERIFICATO ✓]: {doc}",
+                    "score": 1.0 + confidence,  # bonus per fatti verificati
+                    "ts": meta.get('ts', 0)
+                })
         
-        return "\n".join(combined[:limit]) if combined else ""
+        # 2. Knowledge base (documenti)
+        if results_knw and results_knw['documents'] and results_knw['documents'][0]:
+            for doc, meta in zip(
+                results_knw['documents'][0],
+                results_knw['metadatas'][0]
+            ):
+                source = meta.get('source', 'unknown')
+                combined.append({
+                    "text": f"[DOCS: {source}]: {doc}",
+                    "score": 0.8,
+                    "ts": meta.get('ts', 0)
+                })
+        
+        # 3. Chat memories (priorità minore)
+        if results_mem and results_mem['documents'] and results_mem['documents'][0]:
+            for doc, meta in zip(
+                results_mem['documents'][0],
+                results_mem['metadatas'][0]
+            ):
+                confidence = meta.get('confidence', 0.7)
+                combined.append({
+                    "text": f"[RICORDO ~{int(confidence*100)}%]: {doc}",
+                    "score": 0.5 * confidence,
+                    "ts": meta.get('ts', 0)
+                })
+        
+        # Sort per score (desc) e ts (desc per parità)
+        combined.sort(key=lambda x: (x["score"], x["ts"]), reverse=True)
+        
+        # Ritorna i top limit
+        return "\n".join([item["text"] for item in combined[:limit]]) if combined else ""
+    
     except Exception as e:
         logger.error(f"[memory] Query error: {e}")
         return ""
 
 
-def add_knowledge(text: str, source_name: str):
-    """Aggiunge documento con chunking — deduplica su hash chunk."""
+def add_knowledge(
+    text: str, 
+    source_name: str,
+    version: str | None = None,
+    replace_existing: bool = False
+):
+    """
+    Aggiunge documento con chunking — deduplica su hash chunk.
+    
+    Args:
+        text: Contenuto del documento
+        source_name: Nome del file sorgente
+        version: Versione del documento (opzionale)
+        replace_existing: Se True, rimuove chunk vecchi con lo stesso source_name
+    """
     _init()
     try:
+        # Se replace_existing, elimina chunk vecchi
+        if replace_existing:
+            # Trova tutti i chunk con questo source_name
+            all_docs = _knw_coll.get(where={"source": source_name})
+            if all_docs and all_docs['ids']:
+                _knw_coll.delete(ids=all_docs['ids'])
+                logger.info(f"[memory] Removed {len(all_docs['ids'])} old chunks from: {source_name}")
+        
         chunks = _chunk_text(text, size=CHUNK_SIZE)
         added = 0
+        ts = int(time.time())
+        
         for i, chunk in enumerate(chunks):
-            chunk_hash = hashlib.md5(chunk.encode()).hexdigest()[:12]
-            doc_id = f"knw_{chunk_hash}"
+            # ID basato su source + chunk index (non hash del contenuto)
+            # così se il documento cambia, i chunk vengono aggiornati
+            doc_id = f"knw_{hashlib.md5(f'{source_name}_{i}'.encode()).hexdigest()[:12]}"
             
-            # Deduplica
-            existing = _knw_coll.get(ids=[doc_id])
-            if existing and existing['ids']:
-                continue
+            # Se replace_existing è False, check deduplica classica
+            if not replace_existing:
+                existing = _knw_coll.get(ids=[doc_id])
+                if existing and existing['ids']:
+                    continue
             
             _knw_coll.add(
                 documents=[chunk],
-                metadatas=[{"source": source_name, "chunk": i}],
+                metadatas=[{
+                    "source": source_name,
+                    "chunk": i,
+                    "version": version or "unknown",
+                    "ingested_at": ts,
+                }],
                 ids=[doc_id]
             )
             added += 1
@@ -145,3 +293,48 @@ def add_knowledge(text: str, source_name: str):
         logger.info(f"[memory] Added {added}/{len(chunks)} chunks from: {source_name}")
     except Exception as e:
         logger.error(f"[memory] Add knowledge error: {e}")
+
+
+def cleanup_old_versions(source_name: str, keep_latest: int = 1):
+    """
+    Elimina versioni vecchie di un documento, mantenendo solo le N più recenti.
+    
+    Args:
+        source_name: Nome del documento
+        keep_latest: Quante versioni mantenere (default 1)
+    """
+    _init()
+    try:
+        # Trova tutte le versioni di questo documento
+        all_docs = _knw_coll.get(where={"source": source_name})
+        
+        if not all_docs or not all_docs['ids']:
+            return
+        
+        # Raggruppa per version + timestamp
+        versions = {}
+        for doc_id, meta in zip(all_docs['ids'], all_docs['metadatas']):
+            ver = meta.get('version', 'unknown')
+            ts = meta.get('ingested_at', 0)
+            if ver not in versions:
+                versions[ver] = []
+            versions[ver].append((doc_id, ts))
+        
+        # Ordina versioni per timestamp (desc)
+        sorted_versions = sorted(
+            versions.items(),
+            key=lambda x: max(ts for _, ts in x[1]),
+            reverse=True
+        )
+        
+        # Elimina versioni oltre keep_latest
+        to_delete = []
+        for ver, chunks in sorted_versions[keep_latest:]:
+            to_delete.extend([chunk_id for chunk_id, _ in chunks])
+        
+        if to_delete:
+            _knw_coll.delete(ids=to_delete)
+            logger.info(f"[memory] Cleaned {len(to_delete)} chunks from old versions of: {source_name}")
+    
+    except Exception as e:
+        logger.error(f"[memory] Cleanup error: {e}")

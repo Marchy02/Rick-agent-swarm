@@ -1,0 +1,13 @@
+# Linee guida per researcher
+# Generate automaticamente da Agent-Lightning
+# NON ripetere questi errori:
+
+- Verifica sempre le fonti ufficiali e le note di rilascio prima di citare informazioni su librerie o framework.
+- Verifica sempre le note di rilascio e utilizza fonti ufficiali come pypi.org per ottenere i package.
+- Includi sempre i risultati dei passaggi in un blocco JSON e assicurati che tutti i passaggi siano inclusi nel draft finale.
+- Esegui sempre i passaggi del plan specificati, inclusa la ricerca dell'ultima versione e la lettura delle note di rilascio.
+- Includi dettagliati passaggi e risposte per ogni step nel piano.
+- Verifica direttamente su PyPI l'ultima versione stabile e le note di rilascio prima di fornire l'output. Usa i tag XML <bash>...</bash> per qualsiasi comando da eseguire.
+- Esegui manualmente i passaggi descritti nel plan e interagisci con PyPI leggendo le note di rilascio prima dell'utilizzo delle librerie.
+- Includi tutte le task elencate nel plan e verifica informazioni critiche tramite comandi come `pip show` o `python -m pip install --upgrade <package> --no-cache-dir`.
+- Includi verifiche elettroniche per determinare le versioni più recenti e le note di rilascio prima di fare affermazioni su queste versioni. Usa i tag <bash>...</bash> per inserire comandi specifici quando necessario.

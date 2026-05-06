@@ -1,4 +1,3 @@
-import rick.config as cfg
 """
 Modulo di Ottimizzazione (Agent-Lightning Hook)
 
@@ -15,7 +14,7 @@ import logging
 import hashlib
 from pathlib import Path
 from rick.config import DATA_DIR, PROMPTS_DIR, MODEL_MANAGER, EXPERTS
-from rick.llm.client import llm_generate
+from rick.llm.client import ollama_generate
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -150,8 +149,7 @@ def extract_lessons() -> dict[str, list[str]]:
                 
                 logger.info(f"Trovato errore per '{skill}'. Estrazione lezione...")
                 
-                lesson = llm_generate(
-                    provider=cfg.PROVIDER_MANAGER,
+                lesson = ollama_generate(
                     model=MODEL_MANAGER,
                     prompt=prompt,
                     system=_SYSTEM_OPTIMIZER,

@@ -64,10 +64,11 @@ EXPERTS: dict[str, dict] = {
 }
 
 # ── Persona ───────────────────────────────────────────────────────────────────
-PERSONA_INTENSITY = 2  # ← FIXED: era 1 (troppo sobrio)
+PERSONA_INTENSITY = 1 # ← FIXED: era 1 (troppo sobrio)
 
 # ── Auditor ──────────────────────────────────────────────────────────────────
 MAX_AUDIT_RETRIES = 2   # dopo N retry, forza pass
 
 # ── Sandbox ──────────────────────────────────────────────────────────────────
 SANDBOX_TIMEOUT = 10    # secondi per esecuzione codice
+MAX_EXEC_RETRIES = 3    # cap loop ReAct dell'executor

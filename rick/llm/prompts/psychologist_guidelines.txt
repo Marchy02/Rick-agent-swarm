@@ -1,0 +1,6 @@
+# Linee guida per psychologist
+# Generate automaticamente da Agent-Lightning
+# NON ripetere questi errori:
+
+- Incorpora esplicitamente i passaggi del piano e le tecniche pertinenti al contesto tecnico, come la suddivisione dei compiti in fasi maneggevoli o la stesura di unit tests.
+- Includi specifiche azioni pratiche per ciascuna strategia proposta e conferma la comprensione del problema tecnico di Rick attraverso prove concrete.

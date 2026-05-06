@@ -117,15 +117,15 @@ def expert_dispatcher_node(state: RickState) -> dict:
     # Iniezione regole sandbox (solo per skill che possono usarla)
     if skill in ["researcher", "coder", "sysadmin", "pentester"]:
         system += (
-            "\n\n═══ REGOLE SANDBOX (OBBLIGATORIE) ═══\n"
-            "Hai accesso a una sandbox reale. Per eseguire comandi DEVI usare ESATTAMENTE questi tag:\n"
-            "  <bash>comando shell qui</bash>\n"
-            "  <python>codice python qui</python>\n\n"
-            "🚨 REGOLA CRITICA: NON scrivere MAI un output di comando se non l'hai visto nel "
-            "'── RISULTATO BASH/PYTHON ──' fornito nel contesto.\n"
-            "Se non c'è ancora un RISULTATO, scrivi il tag XML e FERMATI.\n"
-            "I blocchi ```bash``` Markdown NON vengono eseguiti — usa solo i tag XML.\n"
-            "═══════════════════════════════════════════════\n"
+            "\n\n═══ REGOLE SANDBOX (CRITICHE) ═══\n"
+            "Hai accesso a una sandbox Linux reale. \n"
+            "PER ESEGUIRE COMANDI DEVI USARE I TAG XML:\n"
+            "  <bash>comando</bash>\n"
+            "  <python>codice</python>\n\n"
+            "Se usi i blocchi ```markdown, il codice NON verrà eseguito.\n"
+            "Se devi creare un file, usa <python> o <bash> per farlo, non limitarti a descriverlo.\n"
+            "Dopo aver scritto il tag XML, FERMATI e aspetta il risultato.\n"
+            "════════════════════════════════\n"
         )
 
     prompt   = _build_prompt(state, skill)
@@ -156,6 +156,7 @@ def expert_dispatcher_node(state: RickState) -> dict:
         "model":       cfg["model"],
         "skill":       skill,
         "step":        step,
+        "data":        {"skill": skill, "final_draft": response[:1500]},
     })
 
     # Se la risposta non ha comandi da eseguire, questo esperto ha finito → avanza
