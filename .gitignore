@@ -33,14 +33,16 @@ MANIFEST
 KNOWN_ISSUES.md
 
 # Data and Logs
-data/chroma_db/
-data/traces/
+data/
+report_debug_validator.md
+full_debug_logs.txt
 *.log
 Documento senza titolo.pdf
 back-up/
 backup/
 *.bak
 *.tmp
+*.zip
 
 # IDEs
 .idea/
