@@ -8,11 +8,17 @@ Memoria semantica con ChromaDB — lazy init, chunking, deduplica.
 
 Query priority: verified_facts → knowledge → memories
 """
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
+
 import chromadb
 import requests
 import logging
 import hashlib
 import time
+import sqlite3
+
 from pathlib import Path
 from typing import Literal
 from rick.config import BASE_DIR, OLLAMA_BASE_URL
@@ -20,12 +26,13 @@ from rick.config import BASE_DIR, OLLAMA_BASE_URL
 logger = logging.getLogger(__name__)
 
 DB_PATH = BASE_DIR / "data" / "chroma_db"
+FACTS_SQLITE = BASE_DIR / "data" / "facts.sqlite"
 EMBED_MODEL = "nomic-embed-text"
 CHUNK_SIZE = 500  # token approx
 
 # Lazy init — solo al primo uso
 _client = None
-_verified_coll = None  # ← NUOVO
+_verified_coll = None
 _mem_coll = None
 _knw_coll = None
 
@@ -55,7 +62,11 @@ def _init():
         return
     
     try:
-        _client = chromadb.PersistentClient(path=str(DB_PATH))
+        from chromadb.config import Settings
+        _client = chromadb.PersistentClient(
+            path=str(DB_PATH),
+            settings=Settings(anonymized_telemetry=False)
+        )
         embedder = OllamaEmbedder()
         _verified_coll = _client.get_or_create_collection(
             name="verified_facts", 
@@ -88,27 +99,22 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
 
 def save_verified_fact(
     content: str,
-    source_type: Literal["executor_output", "document"],
+    source_type: Literal["executor_output", "document"] = "executor_output",
     metadata: dict | None = None
 ):
     """
-    Salva un fatto VERIFICATO nella collezione verified_facts.
-    
-    Args:
-        content: Il fatto da salvare
-        source_type: "executor_output" o "document"
-        metadata: dict opzionale con campi aggiuntivi
+    Salva un fatto VERIFICATO nella collezione verified_facts (ChromaDB)
+    e anche nella tabella SQLite per query deterministiche.
     """
-    _init()
-    
     if not content or len(content.strip()) < 10:
         return
     
+    # ChromaDB
+    _init()
     try:
         fact_hash = hashlib.md5(content.encode()).hexdigest()[:12]
         fact_id = f"verified_{fact_hash}"
         
-        # Metadata standard
         meta = {
             "source_type": source_type,
             "verified_by": "output_validator",
@@ -116,25 +122,41 @@ def save_verified_fact(
             "ts": int(time.time()),
             "expires_at": None,
         }
-        
-        # Merge con metadata custom
         if metadata:
             meta.update(metadata)
         
-        # Deduplica
         existing = _verified_coll.get(ids=[fact_id])
         if existing and existing['ids']:
             logger.info(f"[memory] Fatto verificato già presente: {content[:50]}...")
-            return
-        
-        _verified_coll.add(
-            documents=[content],
-            metadatas=[meta],
-            ids=[fact_id]
-        )
-        logger.info(f"[memory] ✅ Verified fact saved: {content[:60]}...")
+        else:
+            _verified_coll.add(
+                documents=[content],
+                metadatas=[meta],
+                ids=[fact_id]
+            )
+            logger.info(f"[memory] ✅ Verified fact saved: {content[:60]}...")
     except Exception as e:
         logger.error(f"[memory] Save verified fact error: {e}")
+    
+    # SQLite per query esatte
+    try:
+        conn = sqlite3.connect(str(FACTS_SQLITE))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS verified_facts_v2 (
+                id INTEGER PRIMARY KEY,
+                fact TEXT NOT NULL UNIQUE,
+                source TEXT DEFAULT 'executor',
+                ts INTEGER NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO verified_facts_v2 (fact, source, ts) VALUES (?, ?, ?)",
+            (content, source_type, int(time.time()))
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"[memory] SQLite verified fact error: {e}")
 
 
 def save_memory(user_input: str, extracted_facts: str, confidence: float = 0.7):
@@ -144,11 +166,9 @@ def save_memory(user_input: str, extracted_facts: str, confidence: float = 0.7):
     
     _init()
     try:
-        # Hash del fatto per deduplica
         fact_hash = hashlib.md5(extracted_facts.encode()).hexdigest()[:12]
         mem_id = f"mem_{fact_hash}"
         
-        # Check se esiste già
         existing = _mem_coll.get(ids=[mem_id])
         if existing and existing['ids']:
             logger.info(f"[memory] Fatto già presente: {extracted_facts[:50]}...")
@@ -180,15 +200,12 @@ def get_recent_memories(query: str, limit: int = 6) -> str:
     """
     _init()
     try:
-        # Query tutte le collezioni
         results_verified = _verified_coll.query(query_texts=[query], n_results=limit)
         results_knw = _knw_coll.query(query_texts=[query], n_results=limit)
         results_mem = _mem_coll.query(query_texts=[query], n_results=limit)
         
-        # Combina con priority (verified > knowledge > memories)
         combined = []
         
-        # 1. Verified facts (massima priorità)
         if results_verified and results_verified['documents'] and results_verified['documents'][0]:
             for doc, meta in zip(
                 results_verified['documents'][0],
@@ -197,11 +214,10 @@ def get_recent_memories(query: str, limit: int = 6) -> str:
                 confidence = meta.get('confidence', 1.0)
                 combined.append({
                     "text": f"[VERIFICATO ✓]: {doc}",
-                    "score": 1.0 + confidence,  # bonus per fatti verificati
+                    "score": 1.0 + confidence,
                     "ts": meta.get('ts', 0)
                 })
         
-        # 2. Knowledge base (documenti)
         if results_knw and results_knw['documents'] and results_knw['documents'][0]:
             for doc, meta in zip(
                 results_knw['documents'][0],
@@ -214,7 +230,6 @@ def get_recent_memories(query: str, limit: int = 6) -> str:
                     "ts": meta.get('ts', 0)
                 })
         
-        # 3. Chat memories (priorità minore)
         if results_mem and results_mem['documents'] and results_mem['documents'][0]:
             for doc, meta in zip(
                 results_mem['documents'][0],
@@ -227,10 +242,7 @@ def get_recent_memories(query: str, limit: int = 6) -> str:
                     "ts": meta.get('ts', 0)
                 })
         
-        # Sort per score (desc) e ts (desc per parità)
         combined.sort(key=lambda x: (x["score"], x["ts"]), reverse=True)
-        
-        # Ritorna i top limit
         return "\n".join([item["text"] for item in combined[:limit]]) if combined else ""
     
     except Exception as e:
@@ -244,20 +256,10 @@ def add_knowledge(
     version: str | None = None,
     replace_existing: bool = False
 ):
-    """
-    Aggiunge documento con chunking — deduplica su hash chunk.
-    
-    Args:
-        text: Contenuto del documento
-        source_name: Nome del file sorgente
-        version: Versione del documento (opzionale)
-        replace_existing: Se True, rimuove chunk vecchi con lo stesso source_name
-    """
+    """Aggiunge documento con chunking — deduplica su hash chunk."""
     _init()
     try:
-        # Se replace_existing, elimina chunk vecchi
         if replace_existing:
-            # Trova tutti i chunk con questo source_name
             all_docs = _knw_coll.get(where={"source": source_name})
             if all_docs and all_docs['ids']:
                 _knw_coll.delete(ids=all_docs['ids'])
@@ -268,11 +270,8 @@ def add_knowledge(
         ts = int(time.time())
         
         for i, chunk in enumerate(chunks):
-            # ID basato su source + chunk index (non hash del contenuto)
-            # così se il documento cambia, i chunk vengono aggiornati
             doc_id = f"knw_{hashlib.md5(f'{source_name}_{i}'.encode()).hexdigest()[:12]}"
             
-            # Se replace_existing è False, check deduplica classica
             if not replace_existing:
                 existing = _knw_coll.get(ids=[doc_id])
                 if existing and existing['ids']:
@@ -296,22 +295,13 @@ def add_knowledge(
 
 
 def cleanup_old_versions(source_name: str, keep_latest: int = 1):
-    """
-    Elimina versioni vecchie di un documento, mantenendo solo le N più recenti.
-    
-    Args:
-        source_name: Nome del documento
-        keep_latest: Quante versioni mantenere (default 1)
-    """
+    """Elimina versioni vecchie di un documento."""
     _init()
     try:
-        # Trova tutte le versioni di questo documento
         all_docs = _knw_coll.get(where={"source": source_name})
-        
         if not all_docs or not all_docs['ids']:
             return
         
-        # Raggruppa per version + timestamp
         versions = {}
         for doc_id, meta in zip(all_docs['ids'], all_docs['metadatas']):
             ver = meta.get('version', 'unknown')
@@ -320,14 +310,12 @@ def cleanup_old_versions(source_name: str, keep_latest: int = 1):
                 versions[ver] = []
             versions[ver].append((doc_id, ts))
         
-        # Ordina versioni per timestamp (desc)
         sorted_versions = sorted(
             versions.items(),
             key=lambda x: max(ts for _, ts in x[1]),
             reverse=True
         )
         
-        # Elimina versioni oltre keep_latest
         to_delete = []
         for ver, chunks in sorted_versions[keep_latest:]:
             to_delete.extend([chunk_id for chunk_id, _ in chunks])
@@ -338,3 +326,16 @@ def cleanup_old_versions(source_name: str, keep_latest: int = 1):
     
     except Exception as e:
         logger.error(f"[memory] Cleanup error: {e}")
+
+
+def get_all_verified_facts_sqlite(limit: int = 20) -> list[str]:
+    """Recupera tutti i fatti verificati dalla tabella SQLite (query esatte)."""
+    try:
+        conn = sqlite3.connect(str(FACTS_SQLITE))
+        rows = conn.execute(
+            "SELECT fact FROM verified_facts_v2 ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []

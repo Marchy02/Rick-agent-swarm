@@ -126,6 +126,7 @@ def main() -> None:
         "audit_notes":     None,
         "audit_passes":    0,
         "executor_passes": 0,
+        "validator_retries": 0,
         "final_response":  "",
         "trace":           [],
     }

@@ -26,9 +26,11 @@ class RickState(TypedDict):
     audit_passes:   int               # contatore giri auditor
     executor_passes: int              # contatore giri ReAct (cap loop)
 
+    # ── Validatore ─────────────────────────────────────────
+    validator_retries: int            # contatore retry del output_validator (max 2)
+
     # ── Persona ───────────────────────────────────────────
     final_response: str               # risposta definitiva in voce Rick
 
     # ── Strumentazione ────────────────────────────────────
     trace: Annotated[List[dict], operator.add]        # JSONL trace per Agent-Lightning
-
